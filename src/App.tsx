@@ -328,14 +328,10 @@ export default function App() {
 
     if (error) { console.error('addWager:', error); return; }
 
-    // Link registered friends as participants for cross-user realtime
+    // Link registered friends as participants (approved=false by default)
     if (participantIds.length > 0) {
       await supabase.from('wager_participants').insert(
-        participantIds.map((pid) => ({ wager_id: data.id, profile_id: pid }))
-      );
-      // Create pending approval records for each participant
-      await supabase.from('wager_approvals').insert(
-        participantIds.map((pid) => ({ wager_id: data.id, profile_id: pid, status: 'pending' }))
+        participantIds.map((pid) => ({ wager_id: data.id, profile_id: pid, approved: false }))
       );
     }
 
@@ -343,37 +339,42 @@ export default function App() {
   }
 
   async function approveWager(wagerId: string) {
-    // Update my approval record directly (no dependency on approvals state)
-    const { error: updErr } = await supabase
-      .from('wager_approvals')
-      .update({ status: 'approved' })
-      .eq('wager_id', wagerId)
-      .eq('profile_id', profile!.id);
-    if (updErr) { console.error('approveWager:', updErr); return; }
-
-    // Check if all approvals for this wager are now resolved
-    const { data: remaining } = await supabase
-      .from('wager_approvals')
-      .select('id')
-      .eq('wager_id', wagerId)
-      .eq('status', 'pending');
-    if ((remaining ?? []).length === 0) {
-      // Everyone approved — activate the wager
-      await supabase.from('wagers').update({ status: 'pending' }).eq('id', wagerId);
+    // RPC atomically: marks wager_participants.approved=true for this user,
+    // then activates the wager once ALL participants have approved.
+    const { data: result, error } = await supabase.rpc('approve_wager', { p_wager_id: wagerId });
+    if (error) {
+      console.error('approveWager RPC:', error);
+      setGlobalToast({ msg: `Approval failed: ${error.message}`, type: 'error' });
+      return;
+    }
+    if (result === 'not_participant') {
+      setGlobalToast({ msg: 'You are not a participant of this wager.', type: 'error' });
+      return;
+    }
+    if (result === 'activated') {
+      // All participants approved — move wager to active grid
       setWagers((prev) => prev.map((w) => w.id === wagerId ? { ...w, status: 'pending' } : w));
+      setGlobalToast({ msg: '🎲 Wager approved and now active!', type: 'success' });
+    } else {
+      // Approved but still waiting on others
+      setGlobalToast({ msg: '✅ Approved! Waiting for other participants.', type: 'info' });
+      // Hide from Pending Approvals for this user by locally flipping status off pending_approval
+      // (realtime UPDATE from DB will sync the creator's view too)
     }
   }
 
   async function declineWager(wagerId: string) {
-    const { error: updErr } = await supabase
-      .from('wager_approvals')
-      .update({ status: 'declined' })
-      .eq('wager_id', wagerId)
-      .eq('profile_id', profile!.id);
-    if (updErr) { console.error('declineWager:', updErr); return; }
-
-    // Mark whole wager as declined immediately
-    await supabase.from('wagers').update({ status: 'declined' }).eq('id', wagerId);
+    const { data: result, error } = await supabase.rpc('decline_wager', { p_wager_id: wagerId });
+    if (error) {
+      console.error('declineWager RPC:', error);
+      setGlobalToast({ msg: `Decline failed: ${error.message}`, type: 'error' });
+      return;
+    }
+    if (result === 'not_participant') {
+      setGlobalToast({ msg: 'You are not a participant of this wager.', type: 'error' });
+      return;
+    }
+    // Optimistically remove from the pending section and mark declined in main grid
     setWagers((prev) => prev.map((w) => w.id === wagerId ? { ...w, status: 'declined' } : w));
   }
 
