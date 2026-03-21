@@ -1,0 +1,48 @@
+// Shared avatar config — used in Welcome.tsx (picker) and App.tsx (header display)
+export const AVATARS = [
+  {
+    id: 0,
+    emoji: '⚡',
+    label: 'Lightning',
+    ring: 'ring-emerald-500',
+    bg: 'bg-emerald-900/50',
+    border: 'border-emerald-500/60',
+    text: 'text-emerald-400',
+  },
+  {
+    id: 1,
+    emoji: '🎯',
+    label: 'Target',
+    ring: 'ring-sky-500',
+    bg: 'bg-sky-900/50',
+    border: 'border-sky-500/60',
+    text: 'text-sky-400',
+  },
+  {
+    id: 2,
+    emoji: '🔥',
+    label: 'Fire',
+    ring: 'ring-violet-500',
+    bg: 'bg-violet-900/50',
+    border: 'border-violet-500/60',
+    text: 'text-violet-400',
+  },
+  {
+    id: 3,
+    emoji: '🏆',
+    label: 'Trophy',
+    ring: 'ring-orange-500',
+    bg: 'bg-orange-900/50',
+    border: 'border-orange-500/60',
+    text: 'text-orange-400',
+  },
+  {
+    id: 4,
+    emoji: '💀',
+    label: 'Skull',
+    ring: 'ring-rose-500',
+    bg: 'bg-rose-900/50',
+    border: 'border-rose-500/60',
+    text: 'text-rose-400',
+  },
+] as const;
