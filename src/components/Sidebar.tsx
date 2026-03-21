@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import {
   Trophy, Beer, TrendingUp, Plus, Users, Bell, BellOff,
   UserPlus, CheckCircle, AlertCircle, ChevronDown, Search, Globe, X,
+  Wallet,
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import type { Wager, Friend, LeaderboardEntry } from '../types';
@@ -22,11 +23,27 @@ interface Props {
 }
 
 interface ProfileResult {
-  id: string;
-  firstName: string;
-  lastName: string;
-  email: string;
-  phone: string;
+  id: string; firstName: string; lastName: string; email: string; phone: string;
+}
+
+// ── Monthly chart helper ────────────────────────────────────────────────────
+
+function buildMonthlyChart(wagers: Wager[]) {
+  const now = new Date();
+  return Array.from({ length: 6 }, (_, i) => {
+    const d     = new Date(now.getFullYear(), now.getMonth() - 5 + i, 1);
+    const year  = d.getFullYear();
+    const month = d.getMonth();
+    const label = d.toLocaleDateString('en-US', { month: 'short' });
+    const inMonth = wagers.filter((w) => {
+      if (w.stakeType !== 'money' || !w.monetaryValue || !w.result) return false;
+      const dd = new Date(w.deadline);
+      return dd.getFullYear() === year && dd.getMonth() === month;
+    });
+    const won  = inMonth.filter((w) => w.result === 'won') .reduce((s, w) => s + (w.monetaryValue ?? 0), 0);
+    const lost = inMonth.filter((w) => w.result === 'lost').reduce((s, w) => s + (w.monetaryValue ?? 0), 0);
+    return { label, won, lost };
+  });
 }
 
 export default function Sidebar({
@@ -48,6 +65,8 @@ export default function Sidebar({
   const [selectedFriends, setSelectedFriends] = useState<string[]>([]);
   const [pickerOpen,      setPickerOpen]      = useState(false);
   const [condition,       setCondition]       = useState('');
+  const [stakeType,       setStakeType]       = useState<'money' | 'other'>('money');
+  const [monetaryValue,   setMonetaryValue]   = useState('');
   const [stake,           setStake]           = useState('');
   const [deadline,        setDeadline]        = useState('');
   const [wagerError,      setWagerError]      = useState('');
@@ -61,7 +80,7 @@ export default function Sidebar({
     return () => clearTimeout(t);
   }, [toast]);
 
-  // Close friend-picker on click outside
+  // Close picker on click outside
   useEffect(() => {
     function handler(e: MouseEvent) {
       if (pickerRef.current && !pickerRef.current.contains(e.target as Node)) setPickerOpen(false);
@@ -70,12 +89,21 @@ export default function Sidebar({
     return () => document.removeEventListener('mousedown', handler);
   }, []);
 
-  // ── Dynamic stats ────────────────────────────────────────────────────────
+  // ── Stats ────────────────────────────────────────────────────────────────
   const activeBets = wagers.filter((w) => w.status === 'pending' || w.status === 'awaiting_payment').length;
   const decided    = wagers.filter((w) => w.result !== undefined);
   const wonCount   = wagers.filter((w) => w.result === 'won').length;
   const winRate    = decided.length > 0 ? Math.round((wonCount / decided.length) * 100) : 0;
   const beerCount  = wagers.filter((w) => /beer|pint/i.test(w.stake)).length;
+
+  // ── Financial ────────────────────────────────────────────────────────────
+  const moneyWagers  = wagers.filter((w) => w.stakeType === 'money' && w.monetaryValue && w.result);
+  const totalWon     = moneyWagers.filter((w) => w.result === 'won') .reduce((s, w) => s + (w.monetaryValue ?? 0), 0);
+  const totalLost    = moneyWagers.filter((w) => w.result === 'lost').reduce((s, w) => s + (w.monetaryValue ?? 0), 0);
+  const netBalance   = totalWon - totalLost;
+  const chartData    = buildMonthlyChart(wagers);
+  const chartMax     = Math.max(...chartData.map((d) => Math.max(d.won, d.lost)), 1);
+  const hasMoneyData = moneyWagers.length > 0;
 
   // ── Local leaderboard (friends) ──────────────────────────────────────────
   const friendStats = friends
@@ -95,8 +123,7 @@ export default function Sidebar({
     const result  = await onAddFriend(trimmed, phoneInput.trim() || undefined);
     if (result === 'added') {
       setToast({ msg: `${trimmed} added to your crew!`, type: 'success' });
-      setFriendInput('');
-      setPhoneInput('');
+      setFriendInput(''); setPhoneInput('');
     } else if (result === 'duplicate') {
       setToast({ msg: `${trimmed} is already in your list.`, type: 'error' });
     } else {
@@ -106,21 +133,18 @@ export default function Sidebar({
 
   async function handleAddFromSearch(p: ProfileResult) {
     if (friends.some((f) => f.profileId === p.id)) {
-      setToast({ msg: `${p.firstName} is already in your list.`, type: 'error' });
-      return;
+      setToast({ msg: `${p.firstName} is already in your list.`, type: 'error' }); return;
     }
     const name   = `${p.firstName} ${p.lastName}`.trim();
     const result = await onAddFriend(name, p.phone || undefined, p.id);
     if (result === 'added') {
       setToast({ msg: `${name} added to your crew!`, type: 'success' });
-      setSearchQuery('');
-      setSearchResults([]);
+      setSearchQuery(''); setSearchResults([]);
     } else if (result === 'duplicate') {
       setToast({ msg: `${name} is already in your list.`, type: 'error' });
     }
   }
 
-  // Debounced search
   function handleSearchChange(q: string) {
     setSearchQuery(q);
     if (searchTimeout.current) clearTimeout(searchTimeout.current);
@@ -129,32 +153,18 @@ export default function Sidebar({
       setSearching(true);
       try {
         const isEmail = q.includes('@');
-        const field   = isEmail ? 'email' : 'phone';
-        const { data } = await supabase
-          .from('profiles')
-          .select('id, first_name, last_name, email, phone')
-          .eq(field, q.trim())
-          .neq('id', currentProfileId)
-          .limit(5);
-        setSearchResults(
-          (data ?? []).map((r: Record<string, unknown>) => ({
-            id:        r.id         as string,
-            firstName: r.first_name as string,
-            lastName:  r.last_name  as string,
-            email:     r.email      as string,
-            phone:     r.phone      as string,
-          }))
-        );
-      } finally {
-        setSearching(false);
-      }
+        const { data } = await supabase.from('profiles').select('id,first_name,last_name,email,phone')
+          .eq(isEmail ? 'email' : 'phone', q.trim()).neq('id', currentProfileId).limit(5);
+        setSearchResults((data ?? []).map((r: Record<string, unknown>) => ({
+          id: r.id as string, firstName: r.first_name as string,
+          lastName: r.last_name as string, email: r.email as string, phone: r.phone as string,
+        })));
+      } finally { setSearching(false); }
     }, 400);
   }
 
-  function toggleFriendSelection(name: string) {
-    setSelectedFriends((prev) =>
-      prev.includes(name) ? prev.filter((n) => n !== name) : [...prev, name]
-    );
+  function toggleFriend(name: string) {
+    setSelectedFriends((prev) => prev.includes(name) ? prev.filter((n) => n !== name) : [...prev, name]);
     setWagerError('');
   }
 
@@ -162,31 +172,32 @@ export default function Sidebar({
     e.preventDefault();
     if (selectedFriends.length === 0) { setWagerError('Select at least one friend.'); return; }
     if (!condition.trim())            { setWagerError('Enter a bet condition.');       return; }
-    if (!stake.trim())                { setWagerError("Enter what's at stake.");       return; }
-    if (!deadline)                    { setWagerError('Set a deadline (date & time).'); return; }
+    if (stakeType === 'money' && (!monetaryValue || Number(monetaryValue) <= 0)) {
+      setWagerError('Enter a valid amount in ₪.'); return;
+    }
+    if (stakeType === 'other' && !stake.trim()) { setWagerError("Enter what's at stake."); return; }
+    if (!deadline) { setWagerError('Set a deadline (date & time).'); return; }
     setWagerError('');
 
-    const nameList =
-      selectedFriends.length === 1
-        ? selectedFriends[0]
-        : selectedFriends.slice(0, -1).join(', ') + ' & ' + selectedFriends[selectedFriends.length - 1];
+    const nameList = selectedFriends.length === 1
+      ? selectedFriends[0]
+      : selectedFriends.slice(0, -1).join(', ') + ' & ' + selectedFriends[selectedFriends.length - 1];
 
     onAddWager({
-      id:        crypto.randomUUID(),
-      creatorId: '',  // filled in by App.tsx
-      title:     condition.slice(0, 45).toUpperCase(),
-      friends:   selectedFriends,
-      stake:     stake.trim(),
-      status:    'pending',
+      id:             crypto.randomUUID(),
+      creatorId:      '',
+      title:          condition.slice(0, 45).toUpperCase(),
+      friends:        selectedFriends,
+      stake:          stake.trim() || (stakeType === 'money' ? '' : stake.trim()),
+      stakeType,
+      monetaryValue:  stakeType === 'money' ? Number(monetaryValue) : undefined,
+      status:         'pending',
       deadline,
-      condition: condition.trim(),
+      condition:      condition.trim(),
     });
 
-    setToast({ msg: `Wager with ${nameList} placed! 🤝`, type: 'success' });
-    setCondition('');
-    setStake('');
-    setDeadline('');
-    setSelectedFriends([]);
+    setToast({ msg: `Wager with ${nameList} placed!`, type: 'success' });
+    setCondition(''); setStake(''); setMonetaryValue(''); setDeadline(''); setSelectedFriends([]);
   }
 
   async function handleNotifToggle() {
@@ -202,12 +213,9 @@ export default function Sidebar({
     }
   }
 
-  const pickerLabel =
-    selectedFriends.length === 0
-      ? 'Select friends...'
-      : selectedFriends.length === 1
-      ? selectedFriends[0]
-      : `${selectedFriends.length} friends selected`;
+  const pickerLabel = selectedFriends.length === 0 ? 'Select friends...'
+    : selectedFriends.length === 1 ? selectedFriends[0]
+    : `${selectedFriends.length} friends selected`;
 
   return (
     <aside className="w-[30%] min-w-[280px] flex flex-col gap-5">
@@ -229,10 +237,74 @@ export default function Sidebar({
       <div className="bg-[#1E293B] border border-[#334155] rounded-xl p-5">
         <h2 className="text-xs font-bold tracking-widest text-slate-400 uppercase mb-4">My Summary</h2>
         <div className="grid grid-cols-3 gap-3">
-          <StatTile icon={<TrendingUp className="text-sky-400 w-5 h-5" />}    value={activeBets}    label="Active Bets" />
-          <StatTile icon={<Trophy className="text-emerald-400 w-5 h-5" />}    value={`${winRate}%`} label="Win Rate"    />
-          <StatTile icon={<Beer className="text-orange-400 w-5 h-5" />}       value={beerCount}     label="🍻 Count"    />
+          <StatTile icon={<TrendingUp className="text-sky-400 w-5 h-5" />}  value={activeBets}    label="Active Bets" />
+          <StatTile icon={<Trophy className="text-emerald-400 w-5 h-5" />}  value={`${winRate}%`} label="Win Rate"    />
+          <StatTile icon={<Beer className="text-orange-400 w-5 h-5" />}     value={beerCount}     label="🍻 Count"    />
         </div>
+      </div>
+
+      {/* ── Financial Balance ── */}
+      <div className="bg-[#1E293B] border border-[#334155] rounded-xl p-5">
+        <div className="flex items-center gap-2 mb-4">
+          <Wallet className="text-violet-400 w-4 h-4" />
+          <h2 className="text-xs font-bold tracking-widest text-slate-400 uppercase">Financial Balance</h2>
+        </div>
+
+        {hasMoneyData ? (
+          <>
+            {/* Net balance */}
+            <div className="flex items-baseline gap-1.5 mb-4">
+              <span className={`text-2xl font-extrabold ${netBalance >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                {netBalance >= 0 ? '+' : ''}₪{Math.abs(netBalance).toLocaleString()}
+              </span>
+              <span className="text-slate-500 text-xs">net balance</span>
+            </div>
+
+            {/* Won / Lost bars */}
+            <div className="flex flex-col gap-2 mb-4">
+              {[
+                { label: 'Won', value: totalWon,  color: 'bg-emerald-500', textColor: 'text-emerald-400' },
+                { label: 'Lost', value: totalLost, color: 'bg-rose-500',    textColor: 'text-rose-400'    },
+              ].map(({ label, value, color, textColor }) => {
+                const pct = totalWon + totalLost > 0
+                  ? Math.round((value / (totalWon + totalLost)) * 100) : 0;
+                return (
+                  <div key={label} className="flex items-center gap-2">
+                    <span className="text-slate-400 text-xs w-6">{label}</span>
+                    <div className="flex-1 h-2 bg-[#0F172A] rounded-full overflow-hidden">
+                      <div className={`h-full ${color} rounded-full transition-all`} style={{ width: `${pct}%` }} />
+                    </div>
+                    <span className={`text-xs font-semibold ${textColor} w-16 text-right`}>₪{value.toLocaleString()}</span>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Monthly mini-chart */}
+            <p className="text-[10px] text-slate-600 uppercase tracking-widest mb-2">Monthly Trend (₪)</p>
+            <div className="flex items-end gap-1 h-12">
+              {chartData.map(({ label, won, lost }) => (
+                <div key={label} className="flex-1 flex flex-col items-center gap-0.5">
+                  <div className="flex items-end gap-px w-full">
+                    <div className="flex-1 bg-emerald-500/70 rounded-t-sm min-h-[2px] transition-all"
+                      style={{ height: `${Math.max(2, Math.round((won  / chartMax) * 44))}px` }} />
+                    <div className="flex-1 bg-rose-500/70 rounded-t-sm min-h-[2px] transition-all"
+                      style={{ height: `${Math.max(2, Math.round((lost / chartMax) * 44))}px` }} />
+                  </div>
+                  <span className="text-[9px] text-slate-600">{label}</span>
+                </div>
+              ))}
+            </div>
+            <div className="flex items-center gap-3 mt-2">
+              <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-emerald-500/70" /><span className="text-[10px] text-slate-500">Won</span></div>
+              <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-rose-500/70" /><span className="text-[10px] text-slate-500">Lost</span></div>
+            </div>
+          </>
+        ) : (
+          <p className="text-slate-600 text-xs text-center py-2">
+            Place a monetary wager to track your balance.
+          </p>
+        )}
       </div>
 
       {/* ── New Wager Form ── */}
@@ -249,16 +321,12 @@ export default function Sidebar({
           </div>
         ) : (
           <form onSubmit={handleSubmit} className="flex flex-col gap-3">
+            {/* Friend picker */}
             <Field label="Friends (select one or more)">
               <div ref={pickerRef} className="relative">
-                <button
-                  type="button"
-                  onClick={() => setPickerOpen((o) => !o)}
-                  className="w-full flex items-center justify-between bg-[#0F172A] border border-[#334155] text-sm rounded-lg px-3 py-2.5 focus:outline-none focus:border-sky-500 cursor-pointer transition-colors hover:border-slate-500"
-                >
-                  <span className={selectedFriends.length === 0 ? 'text-slate-600' : 'text-slate-100'}>
-                    {pickerLabel}
-                  </span>
+                <button type="button" onClick={() => setPickerOpen((o) => !o)}
+                  className="w-full flex items-center justify-between bg-[#0F172A] border border-[#334155] text-sm rounded-lg px-3 py-2.5 focus:outline-none focus:border-sky-500 cursor-pointer transition-colors hover:border-slate-500">
+                  <span className={selectedFriends.length === 0 ? 'text-slate-600' : 'text-slate-100'}>{pickerLabel}</span>
                   <ChevronDown className={`w-4 h-4 text-slate-500 transition-transform ${pickerOpen ? 'rotate-180' : ''}`} />
                 </button>
                 {pickerOpen && (
@@ -266,9 +334,9 @@ export default function Sidebar({
                     {friends.map((f) => {
                       const checked = selectedFriends.includes(f.name);
                       return (
-                        <button key={f.id} type="button" onClick={() => toggleFriendSelection(f.name)}
+                        <button key={f.id} type="button" onClick={() => toggleFriend(f.name)}
                           className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-slate-800 transition-colors cursor-pointer">
-                          <div className={`w-5 h-5 rounded border-2 flex items-center justify-center shrink-0 transition-colors ${checked ? 'bg-emerald-500 border-emerald-500' : 'border-slate-600'}`}>
+                          <div className={`w-5 h-5 rounded border-2 flex items-center justify-center shrink-0 ${checked ? 'bg-emerald-500 border-emerald-500' : 'border-slate-600'}`}>
                             {checked && <CheckCircle className="w-3 h-3 text-white" />}
                           </div>
                           <div className="w-7 h-7 rounded-full bg-slate-700 flex items-center justify-center text-xs font-bold text-slate-300 shrink-0">
@@ -276,7 +344,7 @@ export default function Sidebar({
                           </div>
                           <div className="text-left min-w-0">
                             <span className="text-slate-100 text-sm">{f.name}</span>
-                            {f.profileId && <span className="ml-1.5 text-[10px] text-emerald-500">● online</span>}
+                            {f.profileId && <span className="ml-1.5 text-[10px] text-emerald-500">● registered</span>}
                           </div>
                         </button>
                       );
@@ -287,7 +355,7 @@ export default function Sidebar({
               {selectedFriends.length > 0 && (
                 <div className="flex flex-wrap gap-1 mt-1">
                   {selectedFriends.map((name) => (
-                    <span key={name} onClick={() => toggleFriendSelection(name)}
+                    <span key={name} onClick={() => toggleFriend(name)}
                       className="flex items-center gap-1 bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs px-2 py-0.5 rounded-full cursor-pointer hover:bg-rose-500/10 hover:border-rose-500/30 hover:text-rose-400 transition-colors"
                       title="Click to remove">
                       {name} ×
@@ -297,6 +365,7 @@ export default function Sidebar({
               )}
             </Field>
 
+            {/* Condition */}
             <Field label="Condition">
               <input type="text" value={condition}
                 onChange={(e) => { setCondition(e.target.value); setWagerError(''); }}
@@ -305,14 +374,46 @@ export default function Sidebar({
               />
             </Field>
 
-            <Field label="Stake">
+            {/* Stake type toggle */}
+            <Field label="Stake Type">
+              <div className="flex gap-2">
+                {(['money', 'other'] as const).map((t) => (
+                  <button key={t} type="button" onClick={() => { setStakeType(t); setWagerError(''); }}
+                    className={`flex-1 py-2 rounded-lg text-xs font-semibold border transition-colors cursor-pointer ${
+                      stakeType === t
+                        ? t === 'money' ? 'bg-violet-500/20 text-violet-300 border-violet-500/40' : 'bg-sky-500/20 text-sky-300 border-sky-500/40'
+                        : 'border-[#334155] text-slate-500 hover:text-slate-300'
+                    }`}>
+                    {t === 'money' ? '💰 Money (₪)' : '🍺 Other'}
+                  </button>
+                ))}
+              </div>
+            </Field>
+
+            {/* Money amount */}
+            {stakeType === 'money' && (
+              <Field label="Amount (₪) *">
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm font-semibold">₪</span>
+                  <input type="number" min="1" step="any" value={monetaryValue}
+                    onChange={(e) => { setMonetaryValue(e.target.value); setWagerError(''); }}
+                    placeholder="0"
+                    className="w-full bg-[#0F172A] border border-[#334155] text-slate-100 text-sm rounded-lg pl-7 pr-3 py-2.5 placeholder-slate-600 focus:outline-none focus:border-violet-500"
+                  />
+                </div>
+              </Field>
+            )}
+
+            {/* Stake description */}
+            <Field label={stakeType === 'money' ? 'Description (optional)' : 'Stake *'}>
               <input type="text" value={stake}
                 onChange={(e) => { setStake(e.target.value); setWagerError(''); }}
-                placeholder='"Dinner at Taizu", "50 ILS", "A week of coffee"'
+                placeholder={stakeType === 'money' ? 'e.g. "World Cup Final bet"' : '"Dinner at Taizu", "A week of coffee"'}
                 className="w-full bg-[#0F172A] border border-[#334155] text-slate-100 text-sm rounded-lg px-3 py-2.5 placeholder-slate-600 focus:outline-none focus:border-sky-500"
               />
             </Field>
 
+            {/* Deadline */}
             <Field label="Deadline (date & time)">
               <input type="datetime-local" value={deadline}
                 onChange={(e) => { setDeadline(e.target.value); setWagerError(''); }}
@@ -344,7 +445,8 @@ export default function Sidebar({
         {/* Add mode tabs */}
         <div className="flex gap-1 mb-3">
           {(['manual', 'search'] as const).map((m) => (
-            <button key={m} type="button" onClick={() => { setAddMode(m); setSearchQuery(''); setSearchResults([]); }}
+            <button key={m} type="button"
+              onClick={() => { setAddMode(m); setSearchQuery(''); setSearchResults([]); }}
               className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
                 addMode === m ? 'bg-sky-500/20 text-sky-400 border border-sky-500/30' : 'text-slate-500 hover:text-slate-300'
               }`}>
@@ -375,8 +477,7 @@ export default function Sidebar({
           <div className="mb-4">
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 pointer-events-none" />
-              <input type="text" value={searchQuery}
-                onChange={(e) => handleSearchChange(e.target.value)}
+              <input type="text" value={searchQuery} onChange={(e) => handleSearchChange(e.target.value)}
                 placeholder="Search by email or phone..."
                 className="w-full bg-[#0F172A] border border-[#334155] text-slate-100 text-sm rounded-lg pl-9 pr-3 py-2 placeholder-slate-600 focus:outline-none focus:border-sky-500"
               />
@@ -433,11 +534,9 @@ export default function Sidebar({
                     <span className="text-emerald-400 font-semibold">{fr.wins}W</span>
                     <span className="text-slate-600">/</span>
                     <span className="text-rose-400 font-semibold">{fr.losses}L</span>
-                    <button
-                      onClick={() => void onRemoveFriend(fr.id)}
+                    <button onClick={() => void onRemoveFriend(fr.id)}
                       className="ml-0.5 p-1 rounded text-slate-700 hover:text-rose-400 hover:bg-rose-500/10 transition-colors cursor-pointer"
-                      title="Remove friend"
-                    >
+                      title="Remove friend">
                       <X className="w-3 h-3" />
                     </button>
                   </div>
@@ -486,14 +585,10 @@ export default function Sidebar({
       <div className="bg-[#1E293B] border border-[#334155] rounded-xl p-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            {notificationsEnabled
-              ? <Bell className="text-emerald-400 w-4 h-4" />
-              : <BellOff className="text-slate-500 w-4 h-4" />}
+            {notificationsEnabled ? <Bell className="text-emerald-400 w-4 h-4" /> : <BellOff className="text-slate-500 w-4 h-4" />}
             <div>
               <p className="text-slate-300 text-xs font-semibold">Desktop Alerts</p>
-              <p className="text-slate-600 text-[10px]">
-                {notificationsEnabled ? 'Notifying on results' : 'Click to enable'}
-              </p>
+              <p className="text-slate-600 text-[10px]">{notificationsEnabled ? 'Notifying on results' : 'Click to enable'}</p>
             </div>
           </div>
           <button onClick={handleNotifToggle} className="cursor-pointer" aria-label="Toggle desktop notifications">

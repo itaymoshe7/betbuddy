@@ -1,21 +1,30 @@
-export type WagerStatus = 'pending' | 'awaiting_payment' | 'won' | 'lost' | 'settled';
+export type WagerStatus =
+  | 'pending_approval'   // waiting for participant(s) to accept
+  | 'pending'            // active / in-progress
+  | 'awaiting_payment'   // creator declared won, waiting to collect
+  | 'won'
+  | 'lost'
+  | 'settled'            // fully closed
+  | 'declined';          // a participant rejected it
 
 export interface UserProfile {
-  id: string;          // Supabase auth user id
+  id: string;
   firstName: string;
   lastName: string;
   phone: string;
   email: string;
   avatarId: number;
-  profilePicture?: string; // base64 jpeg or null
+  profilePicture?: string;
 }
 
 export interface Wager {
   id: string;
-  creatorId: string;   // owner's profile id
+  creatorId: string;
   title: string;
-  friends: string[];   // one or more opponent names
+  friends: string[];
   stake: string;
+  stakeType: 'money' | 'other';
+  monetaryValue?: number;   // ILS amount, only when stakeType === 'money'
   status: WagerStatus;
   deadline: string;
   condition: string;
@@ -28,6 +37,13 @@ export interface Friend {
   avatar: string;
   phone?: string;
   profileId?: string;  // set if this friend is a registered BetBuddy user
+}
+
+export interface WagerApproval {
+  id: string;
+  wagerId: string;
+  profileId: string;
+  status: 'pending' | 'approved' | 'declined';
 }
 
 export interface LeaderboardEntry {
