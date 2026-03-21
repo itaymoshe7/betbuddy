@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { CheckCircle, XCircle, MessageCircle } from 'lucide-react';
+import { CheckCircle, XCircle, MessageCircle, Trash2 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import type { Wager, WagerStatus, Friend } from '../types';
 import { sendNotification } from '../notifications';
@@ -42,6 +42,7 @@ interface Props {
   isOwner: boolean;
   notificationsEnabled: boolean;
   onUpdate: (id: string, updates: Partial<Wager>) => void;
+  onDelete: () => void;
 }
 
 function formatFriends(friends: string[]): string {
@@ -94,7 +95,7 @@ function buildWhatsAppUrl(wagerFriendNames: string[], allFriends: Friend[], cond
   return `https://wa.me/?text=${encodeURIComponent(msg)}`;
 }
 
-export default function WagerCard({ wager, friends, isOwner, notificationsEnabled, onUpdate }: Props) {
+export default function WagerCard({ wager, friends, isOwner, notificationsEnabled, onUpdate, onDelete }: Props) {
   const [declaringResult, setDeclaringResult] = useState(false);
   const { label, badgeClass, dotClass } = statusConfig[wager.status];
   const isAwaitingPayment = wager.status === 'awaiting_payment';
@@ -130,7 +131,18 @@ export default function WagerCard({ wager, friends, isOwner, notificationsEnable
       isAwaitingPayment ? 'border-orange-400/40 awaiting-glow' : 'border-[#334155]'
     }`}>
       {/* Header */}
-      <div className="flex items-start justify-between gap-3 p-5 pb-4">
+      <div className="relative flex items-start justify-between gap-3 p-5 pb-4">
+        {isOwner && wager.status !== 'settled' && (
+          <button
+            onClick={() => {
+              if (window.confirm('Delete this wager? This cannot be undone.')) onDelete();
+            }}
+            className="absolute top-3 right-3 p-1.5 rounded-lg text-slate-600 hover:text-rose-400 hover:bg-rose-500/10 transition-colors cursor-pointer z-10"
+            title="Delete wager"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+        )}
         <div className="flex-1 min-w-0">
           <h3 className="text-slate-100 font-bold text-sm tracking-wider leading-snug uppercase truncate">
             {wager.title || wager.condition}
@@ -154,7 +166,7 @@ export default function WagerCard({ wager, friends, isOwner, notificationsEnable
             </span>
           </div>
         </div>
-        <span className={`shrink-0 flex items-center gap-1.5 text-[10px] font-bold px-2.5 py-1 rounded-full whitespace-nowrap ${badgeClass}`}>
+        <span className={`shrink-0 flex items-center gap-1.5 text-[10px] font-bold px-2.5 py-1 rounded-full whitespace-nowrap ${badgeClass} ${isOwner && wager.status !== 'settled' ? 'mr-7' : ''}`}>
           <span className={`w-1.5 h-1.5 rounded-full ${dotClass}`} />
           {label}
         </span>

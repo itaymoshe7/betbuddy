@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import {
   Trophy, Beer, TrendingUp, Plus, Users, Bell, BellOff,
-  UserPlus, CheckCircle, AlertCircle, ChevronDown, Search, Globe,
+  UserPlus, CheckCircle, AlertCircle, ChevronDown, Search, Globe, X,
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import type { Wager, Friend, LeaderboardEntry } from '../types';
@@ -16,6 +16,7 @@ interface Props {
   currentProfileId:    string;
   onAddWager:          (wager: Wager) => void;
   onAddFriend:         (name: string, phone?: string, profileId?: string) => Promise<'added' | 'duplicate' | 'empty'>;
+  onRemoveFriend:      (id: string) => Promise<void>;
   notificationsEnabled: boolean;
   onToggleNotifications: () => Promise<void>;
 }
@@ -30,7 +31,7 @@ interface ProfileResult {
 
 export default function Sidebar({
   wagers, friends, leaderboard, currentProfileId,
-  onAddWager, onAddFriend, notificationsEnabled, onToggleNotifications,
+  onAddWager, onAddFriend, onRemoveFriend, notificationsEnabled, onToggleNotifications,
 }: Props) {
   // ── Add-friend form ──────────────────────────────────────────────────────
   const [friendInput, setFriendInput] = useState('');
@@ -432,6 +433,13 @@ export default function Sidebar({
                     <span className="text-emerald-400 font-semibold">{fr.wins}W</span>
                     <span className="text-slate-600">/</span>
                     <span className="text-rose-400 font-semibold">{fr.losses}L</span>
+                    <button
+                      onClick={() => void onRemoveFriend(fr.id)}
+                      className="ml-0.5 p-1 rounded text-slate-700 hover:text-rose-400 hover:bg-rose-500/10 transition-colors cursor-pointer"
+                      title="Remove friend"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
                   </div>
                 </div>
               );

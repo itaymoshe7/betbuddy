@@ -1,13 +1,13 @@
 import { useState, useEffect, useRef } from 'react';
 import type { RealtimeChannel, Session } from '@supabase/supabase-js';
-import { Zap, Swords, Menu, X, LogOut, UserCog } from 'lucide-react';
+import { Zap, Swords, Menu, X, LogOut, UserCog, Bell } from 'lucide-react';
 import { supabase } from './lib/supabase';
 import Sidebar from './components/Sidebar';
 import WagerCard from './components/WagerCard';
 import Welcome from './components/Welcome';
 import type { Wager, WagerStatus, Friend, UserProfile, LeaderboardEntry } from './types';
 import { AVATARS } from './avatars';
-import { requestPermission, isPermissionGranted } from './notifications';
+import { requestPermission, isPermissionGranted, sendNotification } from './notifications';
 import './index.css';
 
 const NOTIF_KEY  = 'betbuddy_notifications';
@@ -117,9 +117,21 @@ export default function App() {
   const [notificationsEnabled, setNotificationsEnabled] = useState(
     () => localStorage.getItem(NOTIF_KEY) === 'true' && isPermissionGranted()
   );
+  const [globalToast, setGlobalToast] = useState<{ msg: string; type: 'success' | 'error' | 'info' } | null>(null);
 
-  const profileMenuRef = useRef<HTMLDivElement>(null);
-  const realtimeRef    = useRef<RealtimeChannel | null>(null);
+  const profileMenuRef   = useRef<HTMLDivElement>(null);
+  const realtimeRef      = useRef<RealtimeChannel | null>(null);
+  const notifEnabledRef  = useRef(notificationsEnabled);
+
+  // Keep notifEnabledRef in sync so realtime callbacks see current value
+  useEffect(() => { notifEnabledRef.current = notificationsEnabled; }, [notificationsEnabled]);
+
+  // Auto-dismiss global toast after 4 s
+  useEffect(() => {
+    if (!globalToast) return;
+    const t = setTimeout(() => setGlobalToast(null), 4000);
+    return () => clearTimeout(t);
+  }, [globalToast]);
 
   // ── Auth bootstrap ────────────────────────────────────────────────────────
 
@@ -182,26 +194,56 @@ export default function App() {
 
   function setupRealtime(userId: string) {
     realtimeRef.current?.unsubscribe();
+
+    async function handleIncomingWager(w: Wager) {
+      const { data: creator } = await supabase
+        .from('profiles')
+        .select('first_name, last_name')
+        .eq('id', w.creatorId)
+        .single();
+      const name = creator
+        ? `${creator.first_name as string} ${creator.last_name as string}`.trim()
+        : 'A friend';
+      setGlobalToast({ msg: `🎲 New bet from ${name}! Stake: ${w.stake}`, type: 'info' });
+      if (notifEnabledRef.current) {
+        sendNotification(`New Wager from ${name}!`, `Stake: ${w.stake}. Check it out now!`);
+      }
+    }
+
     const channel = supabase
-      .channel(`wagers-${userId}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'wagers' },
-        (payload) => {
-          if (payload.eventType === 'INSERT') {
-            setWagers((prev) => {
-              const w = mapWager(payload.new as Record<string, unknown>);
-              return prev.some((x) => x.id === w.id) ? prev : [w, ...prev];
-            });
-          } else if (payload.eventType === 'UPDATE') {
-            const w = mapWager(payload.new as Record<string, unknown>);
-            setWagers((prev) => prev.map((x) => (x.id === w.id ? w : x)));
-          } else if (payload.eventType === 'DELETE') {
-            setWagers((prev) => prev.filter((x) => x.id !== (payload.old as { id: string }).id));
-          }
+      .channel(`betbuddy-${userId}`)
+      // ── Wager changes (INSERT / UPDATE / DELETE) ──────────────────────────
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'wagers' }, (payload) => {
+        if (payload.eventType === 'INSERT') {
+          const w = mapWager(payload.new as Record<string, unknown>);
+          setWagers((prev) => {
+            if (prev.some((x) => x.id === w.id)) return prev;
+            // Notify when a wager from someone else appears (we're a participant)
+            if (w.creatorId !== userId) void handleIncomingWager(w);
+            return [w, ...prev];
+          });
+        } else if (payload.eventType === 'UPDATE') {
+          const w = mapWager(payload.new as Record<string, unknown>);
+          setWagers((prev) => prev.map((x) => (x.id === w.id ? w : x)));
+        } else if (payload.eventType === 'DELETE') {
+          setWagers((prev) => prev.filter((x) => x.id !== (payload.old as { id: string }).id));
         }
-      )
+      })
+      // ── Participant link created (another user added us to a wager) ───────
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'wager_participants' }, async (payload) => {
+        const row = payload.new as { wager_id: string; profile_id: string };
+        if (row.profile_id !== userId) return;
+        const { data: wRow } = await supabase.from('wagers').select('*').eq('id', row.wager_id).single();
+        if (!wRow) return;
+        const w = mapWager(wRow as Record<string, unknown>);
+        setWagers((prev) => {
+          if (prev.some((x) => x.id === w.id)) return prev;
+          void handleIncomingWager(w);
+          return [w, ...prev];
+        });
+      })
       .subscribe();
+
     realtimeRef.current = channel;
   }
 
@@ -323,6 +365,29 @@ export default function App() {
     }
   }
 
+  async function deleteWager(id: string) {
+    // Optimistic remove
+    setWagers((prev) => prev.filter((w) => w.id !== id));
+    const { error } = await supabase.from('wagers').delete().eq('id', id);
+    if (error) {
+      console.error('deleteWager:', error);
+      // Roll back on failure by re-fetching
+      const { data: wRows } = await supabase.from('wagers').select('*').order('created_at', { ascending: false });
+      setWagers((wRows ?? []).map((r) => mapWager(r as Record<string, unknown>)));
+    }
+  }
+
+  async function removeFriend(id: string) {
+    // Optimistic remove
+    setFriends((prev) => prev.filter((f) => f.id !== id));
+    const { error } = await supabase.from('friends').delete().eq('id', id);
+    if (error) {
+      console.error('removeFriend:', error);
+      const { data: fRows } = await supabase.from('friends').select('*').order('created_at');
+      setFriends((fRows ?? []).map((r) => mapFriend(r as Record<string, unknown>)));
+    }
+  }
+
   // ── Loading screen ────────────────────────────────────────────────────────
 
   if (loading) {
@@ -359,6 +424,21 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#0F172A] flex flex-col" style={{ fontFamily: 'Inter, sans-serif' }}>
+      {/* ── Global Toast (real-time notifications) ── */}
+      {globalToast && (
+        <div className={`fixed bottom-6 left-1/2 -translate-x-1/2 z-[100] flex items-center gap-2.5 px-4 py-3 rounded-xl shadow-2xl text-sm font-semibold border transition-all animate-pulse-once ${
+          globalToast.type === 'success' ? 'bg-emerald-900/95 border-emerald-500/50 text-emerald-200'
+          : globalToast.type === 'error'  ? 'bg-rose-900/95 border-rose-500/50 text-rose-200'
+          :                                  'bg-violet-900/95 border-violet-500/50 text-violet-200'
+        }`}>
+          <Bell className="w-4 h-4 shrink-0" />
+          <span>{globalToast.msg}</span>
+          <button onClick={() => setGlobalToast(null)} className="ml-1 opacity-60 hover:opacity-100 cursor-pointer">
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
       {/* ── Top Nav ── */}
       <header className="border-b border-[#1E293B] px-4 md:px-8 py-3 md:py-4 flex items-center justify-between sticky top-0 z-30 bg-[#0F172A]">
         <div className="flex items-center gap-2 md:gap-3">
@@ -453,6 +533,7 @@ export default function App() {
                 currentProfileId={profile.id}
                 onAddWager={(w) => { void addWager(w); setSidebarOpen(false); }}
                 onAddFriend={addFriend}
+                onRemoveFriend={removeFriend}
                 notificationsEnabled={notificationsEnabled}
                 onToggleNotifications={handleToggleNotifications}
               />
@@ -471,6 +552,7 @@ export default function App() {
             currentProfileId={profile.id}
             onAddWager={(w) => { void addWager(w); }}
             onAddFriend={addFriend}
+            onRemoveFriend={removeFriend}
             notificationsEnabled={notificationsEnabled}
             onToggleNotifications={handleToggleNotifications}
           />
@@ -513,6 +595,7 @@ export default function App() {
                   isOwner={wager.creatorId === profile.id}
                   notificationsEnabled={notificationsEnabled}
                   onUpdate={(id, updates) => { void updateWager(id, updates); }}
+                  onDelete={() => { void deleteWager(wager.id); }}
                 />
               ))}
             </div>
