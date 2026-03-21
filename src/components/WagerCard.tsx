@@ -39,6 +39,7 @@ const actionClass: Record<WagerStatus, string> = {
 interface Props {
   wager: Wager;
   friends: Friend[];
+  isOwner: boolean;
   notificationsEnabled: boolean;
   onUpdate: (id: string, updates: Partial<Wager>) => void;
 }
@@ -93,7 +94,7 @@ function buildWhatsAppUrl(wagerFriendNames: string[], allFriends: Friend[], cond
   return `https://wa.me/?text=${encodeURIComponent(msg)}`;
 }
 
-export default function WagerCard({ wager, friends, notificationsEnabled, onUpdate }: Props) {
+export default function WagerCard({ wager, friends, isOwner, notificationsEnabled, onUpdate }: Props) {
   const [declaringResult, setDeclaringResult] = useState(false);
   const { label, badgeClass, dotClass } = statusConfig[wager.status];
   const isAwaitingPayment = wager.status === 'awaiting_payment';
@@ -203,8 +204,9 @@ export default function WagerCard({ wager, friends, notificationsEnabled, onUpda
           <>
             <button
               onClick={handleAction}
-              disabled={wager.status === 'settled'}
-              className={`w-full py-3 rounded-lg text-sm transition-colors ${actionClass[wager.status]}`}
+              disabled={wager.status === 'settled' || !isOwner}
+              className={`w-full py-3 rounded-lg text-sm transition-colors ${actionClass[wager.status]} ${!isOwner ? 'opacity-40 cursor-not-allowed' : ''}`}
+              title={!isOwner ? 'Only the bet creator can update this wager' : undefined}
             >
               {actionLabel[wager.status]}
             </button>

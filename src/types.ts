@@ -1,21 +1,23 @@
 export type WagerStatus = 'pending' | 'awaiting_payment' | 'won' | 'lost' | 'settled';
 
 export interface UserProfile {
+  id: string;          // Supabase auth user id
   firstName: string;
   lastName: string;
   phone: string;
   email: string;
   avatarId: number;
-  profilePicture?: string; // base64 jpeg, 200x200, stored in localStorage
+  profilePicture?: string; // base64 jpeg or null
 }
 
 export interface Wager {
   id: string;
+  creatorId: string;   // owner's profile id
   title: string;
-  friends: string[];       // one or more opponents
-  stake: string;           // free text, e.g. "Dinner at Taizu"
+  friends: string[];   // one or more opponent names
+  stake: string;
   status: WagerStatus;
-  deadline: string;        // ISO datetime string e.g. "2026-03-28T20:00"
+  deadline: string;
   condition: string;
   result?: 'won' | 'lost';
 }
@@ -23,6 +25,17 @@ export interface Wager {
 export interface Friend {
   id: string;
   name: string;
-  avatar: string; // 2-letter initials
+  avatar: string;
   phone?: string;
+  profileId?: string;  // set if this friend is a registered BetBuddy user
+}
+
+export interface LeaderboardEntry {
+  id: string;
+  firstName: string;
+  lastName: string;
+  avatarId: number;
+  wins: number;
+  decided: number;
+  total: number;
 }

@@ -1,59 +1,212 @@
 import { useState, useEffect, useRef } from 'react';
+import type { RealtimeChannel, Session } from '@supabase/supabase-js';
 import { Zap, Swords, Menu, X, LogOut, UserCog } from 'lucide-react';
+import { supabase } from './lib/supabase';
 import Sidebar from './components/Sidebar';
 import WagerCard from './components/WagerCard';
 import Welcome from './components/Welcome';
-import type { Wager, WagerStatus, Friend, UserProfile } from './types';
+import type { Wager, WagerStatus, Friend, UserProfile, LeaderboardEntry } from './types';
 import { AVATARS } from './avatars';
 import { requestPermission, isPermissionGranted } from './notifications';
 import './index.css';
 
-const PROFILE_KEY = 'betbuddy_profile_v1';
-const WAGERS_KEY  = 'betbuddy_wagers_v3';
-const FRIENDS_KEY = 'betbuddy_friends_v2';
-const NOTIF_KEY   = 'betbuddy_notifications';
-const FILTERS = ['All', 'Pending', 'Won', 'Lost', 'Settled'] as const;
+const NOTIF_KEY  = 'betbuddy_notifications';
+const MIGR_KEY   = 'betbuddy_migrated_v1';
+const FILTERS    = ['All', 'Pending', 'Won', 'Lost', 'Settled'] as const;
 type Filter = (typeof FILTERS)[number];
 
-function load<T>(key: string, fallback: T): T {
-  try {
-    const raw = localStorage.getItem(key);
-    if (raw) return JSON.parse(raw) as T;
-  } catch { /* ignore */ }
-  return fallback;
+// ── DB row helpers ──────────────────────────────────────────────────────────
+
+function mapProfile(row: Record<string, unknown>): UserProfile {
+  return {
+    id:             row.id as string,
+    firstName:      row.first_name as string,
+    lastName:       (row.last_name  as string) ?? '',
+    phone:          (row.phone      as string) ?? '',
+    email:          (row.email      as string) ?? '',
+    avatarId:       (row.avatar_id  as number) ?? 0,
+    profilePicture: (row.avatar_url as string | null) ?? undefined,
+  };
 }
 
-function migrateWager(w: Record<string, unknown>): Wager {
-  if (Array.isArray(w.friends)) return w as unknown as Wager;
-  return { ...w, friends: w.friend ? [w.friend as string] : [] } as unknown as Wager;
+function mapWager(row: Record<string, unknown>): Wager {
+  const raw = row.friends as string[] | null;
+  const friends: string[] = Array.isArray(raw) ? raw : [];
+  return {
+    id:        row.id         as string,
+    creatorId: row.creator_id as string,
+    title:     row.title      as string,
+    condition: row.condition  as string,
+    stake:     row.stake      as string,
+    deadline:  row.deadline   as string,
+    status:    row.status     as WagerStatus,
+    result:    (row.result    as 'won' | 'lost' | null) ?? undefined,
+    friends,
+  };
 }
 
-function loadWagers(): Wager[] {
+function mapFriend(row: Record<string, unknown>): Friend {
+  return {
+    id:        row.id         as string,
+    name:      row.name       as string,
+    avatar:    row.avatar     as string,
+    phone:     (row.phone     as string | null) || undefined,
+    profileId: (row.profile_id as string | null) || undefined,
+  };
+}
+
+// ── LocalStorage migration (runs once on first login) ──────────────────────
+
+async function migrateLocalStorage(userId: string) {
+  if (localStorage.getItem(MIGR_KEY)) return;
   try {
-    const raw = localStorage.getItem(WAGERS_KEY);
-    if (raw) return (JSON.parse(raw) as Record<string, unknown>[]).map(migrateWager);
-  } catch { /* ignore */ }
-  return [];
+    const rawFriends = localStorage.getItem('betbuddy_friends_v2');
+    if (rawFriends) {
+      const lf = JSON.parse(rawFriends) as Array<{ id?: string; name: string; phone?: string; avatar?: string }>;
+      if (lf.length > 0) {
+        await supabase.from('friends').upsert(
+          lf.map((f) => ({
+            id:       f.id ?? crypto.randomUUID(),
+            owner_id: userId,
+            name:     f.name,
+            phone:    f.phone ?? '',
+            avatar:   f.avatar ?? f.name.slice(0, 2).toUpperCase(),
+          })),
+          { onConflict: 'id' }
+        );
+      }
+    }
+    const rawWagers = localStorage.getItem('betbuddy_wagers_v3');
+    if (rawWagers) {
+      const lw = JSON.parse(rawWagers) as Array<Record<string, unknown>>;
+      if (lw.length > 0) {
+        await supabase.from('wagers').upsert(
+          lw.map((w) => ({
+            id:         w.id ?? crypto.randomUUID(),
+            creator_id: userId,
+            title:      w.title,
+            condition:  w.condition,
+            stake:      w.stake,
+            deadline:   w.deadline,
+            status:     w.status ?? 'pending',
+            result:     w.result ?? null,
+            friends:    Array.isArray(w.friends) ? w.friends : (w.friend ? [w.friend] : []),
+          })),
+          { onConflict: 'id' }
+        );
+      }
+    }
+  } catch (err) {
+    console.warn('Migration error:', err);
+  } finally {
+    localStorage.setItem(MIGR_KEY, 'true');
+  }
 }
 
 export default function App() {
-  const [profile,   setProfile]   = useState<UserProfile | null>(() => load<UserProfile | null>(PROFILE_KEY, null));
-  const [wagers,    setWagers]    = useState<Wager[]>(loadWagers);
-  const [friends,   setFriends]   = useState<Friend[]>(() => load<Friend[]>(FRIENDS_KEY, []));
-  const [editingProfile, setEditingProfile] = useState(false);
-  const [activeFilter,   setActiveFilter]   = useState<Filter>('All');
-  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
-  const [sidebarOpen,     setSidebarOpen]     = useState(false);
+  const [session,            setSession]            = useState<Session | null>(null);
+  const [profile,            setProfile]            = useState<UserProfile | null>(null);
+  const [wagers,             setWagers]             = useState<Wager[]>([]);
+  const [friends,            setFriends]            = useState<Friend[]>([]);
+  const [leaderboard,        setLeaderboard]        = useState<LeaderboardEntry[]>([]);
+  const [loading,            setLoading]            = useState(true);
+  const [editingProfile,     setEditingProfile]     = useState(false);
+  const [activeFilter,       setActiveFilter]       = useState<Filter>('All');
+  const [profileMenuOpen,    setProfileMenuOpen]    = useState(false);
+  const [sidebarOpen,        setSidebarOpen]        = useState(false);
   const [notificationsEnabled, setNotificationsEnabled] = useState(
     () => localStorage.getItem(NOTIF_KEY) === 'true' && isPermissionGranted()
   );
 
   const profileMenuRef = useRef<HTMLDivElement>(null);
+  const realtimeRef    = useRef<RealtimeChannel | null>(null);
 
-  useEffect(() => { localStorage.setItem(WAGERS_KEY,  JSON.stringify(wagers));  }, [wagers]);
-  useEffect(() => { localStorage.setItem(FRIENDS_KEY, JSON.stringify(friends)); }, [friends]);
+  // ── Auth bootstrap ────────────────────────────────────────────────────────
 
-  // Auto-request notifications after profile is set
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session: s } }) => {
+      setSession(s);
+      if (s) {
+        loadUserData(s.user.id);
+      } else {
+        setLoading(false);
+      }
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, s) => {
+      setSession(s);
+      if (s && !profile) {
+        loadUserData(s.user.id);
+      } else if (!s) {
+        setProfile(null);
+        setWagers([]);
+        setFriends([]);
+        setLeaderboard([]);
+        setLoading(false);
+        realtimeRef.current?.unsubscribe();
+        realtimeRef.current = null;
+      }
+    });
+
+    return () => { subscription.unsubscribe(); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function loadUserData(userId: string) {
+    setLoading(true);
+    try {
+      const [{ data: pRow }, { data: wRows }, { data: fRows }, { data: lb }] = await Promise.all([
+        supabase.from('profiles').select('*').eq('id', userId).single(),
+        supabase.from('wagers').select('*').order('created_at', { ascending: false }),
+        supabase.from('friends').select('*').eq('owner_id', userId).order('created_at'),
+        supabase.rpc('get_leaderboard'),
+      ]);
+      if (pRow) setProfile(mapProfile(pRow as Record<string, unknown>));
+      setWagers((wRows ?? []).map((r) => mapWager(r as Record<string, unknown>)));
+      setFriends((fRows ?? []).map((r) => mapFriend(r as Record<string, unknown>)));
+      setLeaderboard((lb ?? []).map((r: Record<string, unknown>) => ({
+        id:        r.id        as string,
+        firstName: r.first_name as string,
+        lastName:  r.last_name  as string,
+        avatarId:  r.avatar_id  as number,
+        wins:      Number(r.wins),
+        decided:   Number(r.decided),
+        total:     Number(r.total),
+      })));
+      setupRealtime(userId);
+      await migrateLocalStorage(userId);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function setupRealtime(userId: string) {
+    realtimeRef.current?.unsubscribe();
+    const channel = supabase
+      .channel(`wagers-${userId}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'wagers' },
+        (payload) => {
+          if (payload.eventType === 'INSERT') {
+            setWagers((prev) => {
+              const w = mapWager(payload.new as Record<string, unknown>);
+              return prev.some((x) => x.id === w.id) ? prev : [w, ...prev];
+            });
+          } else if (payload.eventType === 'UPDATE') {
+            const w = mapWager(payload.new as Record<string, unknown>);
+            setWagers((prev) => prev.map((x) => (x.id === w.id ? w : x)));
+          } else if (payload.eventType === 'DELETE') {
+            setWagers((prev) => prev.filter((x) => x.id !== (payload.old as { id: string }).id));
+          }
+        }
+      )
+      .subscribe();
+    realtimeRef.current = channel;
+  }
+
+  // ── Auto-request notifications ────────────────────────────────────────────
+
   useEffect(() => {
     if (!profile) return;
     if ('Notification' in window && Notification.permission === 'default') {
@@ -63,7 +216,8 @@ export default function App() {
     }
   }, [profile]);
 
-  // Close profile menu on outside click
+  // ── Close profile menu on outside click ───────────────────────────────────
+
   useEffect(() => {
     function handler(e: MouseEvent) {
       if (profileMenuRef.current && !profileMenuRef.current.contains(e.target as Node))
@@ -73,28 +227,24 @@ export default function App() {
     return () => document.removeEventListener('mousedown', handler);
   }, []);
 
-  // Lock body scroll when mobile sidebar is open
+  // ── Body scroll lock on mobile sidebar ───────────────────────────────────
+
   useEffect(() => {
     document.body.style.overflow = sidebarOpen ? 'hidden' : '';
     return () => { document.body.style.overflow = ''; };
   }, [sidebarOpen]);
 
-  // ── Handlers ──────────────────────────────────────────────────────────────
+  // ── Handlers ─────────────────────────────────────────────────────────────
 
   function handleProfileComplete(p: UserProfile) {
-    localStorage.setItem(PROFILE_KEY, JSON.stringify(p));
     setProfile(p);
     setEditingProfile(false);
   }
 
-  function handleLogout() {
-    if (!confirm('Clear your profile and all data? This cannot be undone.')) return;
-    [PROFILE_KEY, WAGERS_KEY, FRIENDS_KEY, NOTIF_KEY].forEach((k) => localStorage.removeItem(k));
-    setProfile(null); setWagers([]); setFriends([]); setProfileMenuOpen(false);
-  }
-
-  function handleEditProfile() {
-    setEditingProfile(true);
+  async function handleLogout() {
+    if (!confirm('Sign out? Your data is saved in the cloud.')) return;
+    realtimeRef.current?.unsubscribe();
+    await supabase.auth.signOut();
     setProfileMenuOpen(false);
   }
 
@@ -109,24 +259,92 @@ export default function App() {
     }
   }
 
-  function addWager(wager: Wager) { setWagers((prev) => [wager, ...prev]); }
+  async function addWager(wager: Wager) {
+    const { data, error } = await supabase.from('wagers').insert({
+      id:         wager.id,
+      creator_id: profile!.id,
+      title:      wager.title,
+      condition:  wager.condition,
+      stake:      wager.stake,
+      deadline:   wager.deadline,
+      status:     wager.status,
+      result:     wager.result ?? null,
+      friends:    wager.friends,
+    }).select().single();
 
-  function addFriend(name: string, phone?: string): 'added' | 'duplicate' | 'empty' {
+    if (error) { console.error('addWager:', error); return; }
+
+    // Link any registered friends as participants for cross-user realtime
+    const participantIds = wager.friends
+      .map((name) => friends.find((f) => f.name === name)?.profileId)
+      .filter(Boolean) as string[];
+    if (participantIds.length > 0) {
+      await supabase.from('wager_participants').insert(
+        participantIds.map((pid) => ({ wager_id: data.id, profile_id: pid }))
+      );
+    }
+
+    setWagers((prev) => [{ ...wager, creatorId: profile!.id }, ...prev]);
+  }
+
+  async function addFriend(name: string, phone?: string, profileId?: string): Promise<'added' | 'duplicate' | 'empty'> {
     const trimmed = name.trim();
     if (!trimmed) return 'empty';
     if (friends.some((f) => f.name.toLowerCase() === trimmed.toLowerCase())) return 'duplicate';
-    setFriends((prev) => [...prev, { id: crypto.randomUUID(), name: trimmed, avatar: trimmed.slice(0, 2).toUpperCase(), phone: phone?.trim() || undefined }]);
+    const id     = crypto.randomUUID();
+    const avatar = trimmed.slice(0, 2).toUpperCase();
+    const { error } = await supabase.from('friends').insert({
+      id, owner_id: profile!.id, name: trimmed,
+      phone: phone?.trim() ?? '', avatar,
+      profile_id: profileId ?? null,
+    });
+    if (error) { console.error('addFriend:', error); return 'empty'; }
+    setFriends((prev) => [...prev, { id, name: trimmed, avatar, phone: phone?.trim() || undefined, profileId }]);
     return 'added';
   }
 
-  function updateWager(id: string, updates: Partial<Wager>) {
+  async function updateWager(id: string, updates: Partial<Wager>) {
+    const dbUpdates: Record<string, unknown> = {};
+    if ('status' in updates) dbUpdates.status = updates.status;
+    if ('result' in updates) dbUpdates.result = updates.result ?? null;
+    const { error } = await supabase.from('wagers').update(dbUpdates).eq('id', id);
+    if (error) { console.error('updateWager:', error); return; }
     setWagers((prev) => prev.map((w) => (w.id === id ? { ...w, ...updates } : w)));
+
+    // Refresh leaderboard when a result is declared
+    if ('result' in updates) {
+      supabase.rpc('get_leaderboard').then(({ data: lb }) => {
+        if (lb) setLeaderboard((lb as Record<string, unknown>[]).map((r) => ({
+          id: r.id as string, firstName: r.first_name as string,
+          lastName: r.last_name as string, avatarId: r.avatar_id as number,
+          wins: Number(r.wins), decided: Number(r.decided), total: Number(r.total),
+        })));
+      });
+    }
   }
 
-  // ── Routing ───────────────────────────────────────────────────────────────
+  // ── Loading screen ────────────────────────────────────────────────────────
 
-  if (!profile || editingProfile) {
-    return <Welcome onComplete={handleProfileComplete} initialValues={editingProfile ? profile ?? undefined : undefined} />;
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-[#0F172A] flex items-center justify-center">
+        <div className="flex items-center gap-3">
+          <Zap className="text-emerald-400 w-6 h-6 animate-pulse" fill="currentColor" />
+          <span className="text-slate-300 text-sm font-semibold">Loading BetBuddy…</span>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Show Welcome (signup / login / edit) ──────────────────────────────────
+
+  if (!session || !profile || editingProfile) {
+    return (
+      <Welcome
+        onComplete={handleProfileComplete}
+        initialValues={editingProfile ? profile ?? undefined : undefined}
+      />
+    );
   }
 
   // ── Dashboard ─────────────────────────────────────────────────────────────
@@ -144,7 +362,6 @@ export default function App() {
       {/* ── Top Nav ── */}
       <header className="border-b border-[#1E293B] px-4 md:px-8 py-3 md:py-4 flex items-center justify-between sticky top-0 z-30 bg-[#0F172A]">
         <div className="flex items-center gap-2 md:gap-3">
-          {/* Mobile hamburger */}
           <button
             className="md:hidden p-2 text-slate-400 hover:text-slate-100 cursor-pointer"
             onClick={() => setSidebarOpen(true)}
@@ -159,7 +376,6 @@ export default function App() {
         <div className="flex items-center gap-2 md:gap-3" ref={profileMenuRef}>
           <span className="text-slate-400 text-sm hidden sm:block">Hi, {profile.firstName}</span>
 
-          {/* Avatar button */}
           <button
             onClick={() => setProfileMenuOpen((o) => !o)}
             className="relative cursor-pointer focus:outline-none"
@@ -178,10 +394,8 @@ export default function App() {
             )}
           </button>
 
-          {/* Profile dropdown */}
           {profileMenuOpen && (
             <div className="absolute top-14 right-4 w-64 bg-[#1E293B] border border-[#334155] rounded-xl shadow-2xl z-50 overflow-hidden">
-              {/* User info */}
               <div className="flex items-center gap-3 p-4 border-b border-[#334155]">
                 {profile.profilePicture ? (
                   <img src={profile.profilePicture} alt="avatar" className="w-10 h-10 rounded-full object-cover border border-emerald-500/40" />
@@ -191,16 +405,13 @@ export default function App() {
                   </div>
                 )}
                 <div className="min-w-0">
-                  <p className="text-slate-100 font-semibold text-sm truncate">
-                    {profile.firstName} {profile.lastName}
-                  </p>
+                  <p className="text-slate-100 font-semibold text-sm truncate">{profile.firstName} {profile.lastName}</p>
                   {profile.email && <p className="text-slate-500 text-xs truncate">{profile.email}</p>}
                 </div>
               </div>
-              {/* Actions */}
               <div className="p-1.5 flex flex-col gap-0.5">
                 <button
-                  onClick={handleEditProfile}
+                  onClick={() => { setEditingProfile(true); setProfileMenuOpen(false); }}
                   className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-300 hover:bg-slate-700/50 text-sm transition-colors cursor-pointer"
                 >
                   <UserCog className="w-4 h-4 text-slate-400" /> Edit Profile
@@ -209,7 +420,7 @@ export default function App() {
                   onClick={handleLogout}
                   className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-rose-400 hover:bg-rose-500/10 text-sm transition-colors cursor-pointer"
                 >
-                  <LogOut className="w-4 h-4" /> Switch User / Logout
+                  <LogOut className="w-4 h-4" /> Sign Out
                 </button>
               </div>
             </div>
@@ -220,12 +431,10 @@ export default function App() {
       {/* ── Mobile Sidebar Drawer ── */}
       {sidebarOpen && (
         <>
-          {/* Backdrop */}
           <div
             className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm md:hidden"
             onClick={() => setSidebarOpen(false)}
           />
-          {/* Drawer */}
           <div className="fixed top-0 left-0 h-full w-[85vw] max-w-sm z-50 bg-[#0F172A] border-r border-[#1E293B] overflow-y-auto md:hidden">
             <div className="flex items-center justify-between px-5 py-4 border-b border-[#1E293B]">
               <div className="flex items-center gap-2">
@@ -240,7 +449,9 @@ export default function App() {
               <Sidebar
                 wagers={wagers}
                 friends={friends}
-                onAddWager={(w) => { addWager(w); setSidebarOpen(false); }}
+                leaderboard={leaderboard}
+                currentProfileId={profile.id}
+                onAddWager={(w) => { void addWager(w); setSidebarOpen(false); }}
                 onAddFriend={addFriend}
                 notificationsEnabled={notificationsEnabled}
                 onToggleNotifications={handleToggleNotifications}
@@ -252,19 +463,19 @@ export default function App() {
 
       {/* ── Main Layout ── */}
       <main className="flex flex-col md:flex-row gap-6 p-4 md:p-6 flex-1 max-w-[1400px] mx-auto w-full">
-        {/* Desktop sidebar — hidden on mobile */}
         <div className="hidden md:block">
           <Sidebar
             wagers={wagers}
             friends={friends}
-            onAddWager={addWager}
+            leaderboard={leaderboard}
+            currentProfileId={profile.id}
+            onAddWager={(w) => { void addWager(w); }}
             onAddFriend={addFriend}
             notificationsEnabled={notificationsEnabled}
             onToggleNotifications={handleToggleNotifications}
           />
         </div>
 
-        {/* Main content */}
         <section className="flex-1 flex flex-col gap-4 md:gap-5 min-w-0">
           <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-0 sm:justify-between">
             <div>
@@ -273,7 +484,6 @@ export default function App() {
                 {visibleWagers.length} wager{visibleWagers.length !== 1 ? 's' : ''}
               </p>
             </div>
-            {/* Filter tabs — horizontally scrollable on mobile */}
             <div className="flex items-center gap-1.5 overflow-x-auto pb-1 sm:pb-0">
               {FILTERS.map((filter) => (
                 <button
@@ -300,8 +510,9 @@ export default function App() {
                   key={wager.id}
                   wager={wager}
                   friends={friends}
+                  isOwner={wager.creatorId === profile.id}
                   notificationsEnabled={notificationsEnabled}
-                  onUpdate={updateWager}
+                  onUpdate={(id, updates) => { void updateWager(id, updates); }}
                 />
               ))}
             </div>
@@ -325,7 +536,7 @@ function EmptyState({ filter, hasFriends }: { filter: string; hasFriends: boolea
         </p>
         <p className="text-slate-600 text-sm mt-1 max-w-xs mx-auto">
           {isFiltered ? 'Try a different filter.'
-            : !hasFriends ? 'Tap the menu to add a friend, then place your first wager!'
+            : !hasFriends ? 'Add a friend in the sidebar, then place your first wager!'
             : 'Start a wager with a friend to begin!'}
         </p>
       </div>
