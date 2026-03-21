@@ -33,16 +33,16 @@ function mapWager(row: Record<string, unknown>): Wager {
   const raw = row.friends as string[] | null;
   const friends: string[] = Array.isArray(raw) ? raw : [];
   return {
-    id:            row.id            as string,
-    creatorId:     row.creator_id    as string,
-    title:         row.title         as string,
-    condition:     row.condition     as string,
-    stake:         row.stake         as string,
-    stakeType:     (row.stake_type   as 'money' | 'other') ?? 'other',
+    id:            (row.id            as string) ?? '',
+    creatorId:     (row.creator_id    as string) ?? '',
+    title:         (row.title         as string) ?? '',
+    condition:     (row.condition     as string) ?? '',
+    stake:         (row.stake         as string) ?? '',
+    stakeType:     (row.stake_type    as 'money' | 'other') ?? 'other',
     monetaryValue: (row.monetary_value as number | null) ?? undefined,
-    deadline:      row.deadline      as string,
-    status:        row.status        as WagerStatus,
-    result:        (row.result       as 'won' | 'lost' | null) ?? undefined,
+    deadline:      (row.deadline      as string) ?? '',
+    status:        (row.status        as WagerStatus) ?? 'pending',
+    result:        (row.result        as 'won' | 'lost' | null) ?? undefined,
     friends,
   };
 }
@@ -120,11 +120,15 @@ export default function App() {
   const [notificationsEnabled, setNotificationsEnabled] = useState(
     () => localStorage.getItem(NOTIF_KEY) === 'true' && isPermissionGranted()
   );
-  const [globalToast, setGlobalToast] = useState<{ msg: string; type: 'success' | 'error' | 'info' } | null>(null);
+  const [globalToast,    setGlobalToast]    = useState<{ msg: string; type: 'success' | 'error' | 'info' } | null>(null);
+  // Tracks wagers this user already approved in the current session (so they vanish from Pending Approvals immediately)
+  const [approvedByMe,   setApprovedByMe]   = useState<Set<string>>(new Set());
 
   const profileMenuRef   = useRef<HTMLDivElement>(null);
   const realtimeRef      = useRef<RealtimeChannel | null>(null);
   const notifEnabledRef  = useRef(notificationsEnabled);
+  // Prevents double loadUserData from getSession() + onAuthStateChange(INITIAL_SESSION)
+  const loadedRef        = useRef(false);
 
   // Keep notifEnabledRef in sync so realtime callbacks see current value
   useEffect(() => { notifEnabledRef.current = notificationsEnabled; }, [notificationsEnabled]);
@@ -139,24 +143,34 @@ export default function App() {
   // ── Auth bootstrap ────────────────────────────────────────────────────────
 
   useEffect(() => {
+    console.log('[Auth] Bootstrap: checking session…');
+
     supabase.auth.getSession().then(({ data: { session: s } }) => {
+      console.log('[Auth] getSession result:', s ? `user=${s.user.id}` : 'none');
       setSession(s);
-      if (s) {
+      if (s && !loadedRef.current) {
+        loadedRef.current = true;
         loadUserData(s.user.id);
-      } else {
+      } else if (!s) {
         setLoading(false);
       }
     });
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, s) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, s) => {
+      console.log('[Auth] onAuthStateChange event:', event, s ? `user=${s.user.id}` : 'none');
       setSession(s);
-      if (s && !profile) {
+      if (s && !loadedRef.current) {
+        // Only fires if getSession() didn't already trigger loadUserData
+        loadedRef.current = true;
         loadUserData(s.user.id);
       } else if (!s) {
+        // Signed out
+        loadedRef.current = false;
         setProfile(null);
         setWagers([]);
         setFriends([]);
         setLeaderboard([]);
+        setApprovedByMe(new Set());
         setLoading(false);
         realtimeRef.current?.unsubscribe();
         realtimeRef.current = null;
@@ -168,14 +182,22 @@ export default function App() {
   }, []);
 
   async function loadUserData(userId: string) {
+    console.log('[loadUserData] Starting for user:', userId);
     setLoading(true);
     try {
-      const [{ data: pRow }, { data: wRows }, { data: fRows }, { data: lb }] = await Promise.all([
+      const [{ data: pRow, error: pErr }, { data: wRows, error: wErr }, { data: fRows, error: fErr }, { data: lb, error: lbErr }] = await Promise.all([
         supabase.from('profiles').select('*').eq('id', userId).single(),
         supabase.from('wagers').select('*').order('created_at', { ascending: false }),
         supabase.from('friends').select('*').eq('owner_id', userId).order('created_at'),
         supabase.rpc('get_leaderboard'),
       ]);
+      if (pErr)  console.error('[loadUserData] profiles error:', pErr);
+      if (wErr)  console.error('[loadUserData] wagers error:', wErr);
+      if (fErr)  console.error('[loadUserData] friends error:', fErr);
+      if (lbErr) console.error('[loadUserData] leaderboard error:', lbErr);
+
+      console.log('[loadUserData] Got profile:', !!pRow, '| wagers:', wRows?.length ?? 0, '| friends:', fRows?.length ?? 0);
+
       if (pRow) setProfile(mapProfile(pRow as Record<string, unknown>));
       setWagers((wRows ?? []).map((r) => mapWager(r as Record<string, unknown>)));
       setFriends((fRows ?? []).map((r) => mapFriend(r as Record<string, unknown>)));
@@ -190,12 +212,16 @@ export default function App() {
       })));
       setupRealtime(userId);
       await migrateLocalStorage(userId);
+      console.log('[loadUserData] Done.');
+    } catch (err) {
+      console.error('[loadUserData] Unexpected error:', err);
     } finally {
       setLoading(false);
     }
   }
 
   function setupRealtime(userId: string) {
+    console.log('[Realtime] Setting up channel for user:', userId);
     realtimeRef.current?.unsubscribe();
 
     async function handleIncomingWager(w: Wager) {
@@ -217,6 +243,7 @@ export default function App() {
       .channel(`betbuddy-${userId}`)
       // ── Wager changes (INSERT / UPDATE / DELETE) ──────────────────────────
       .on('postgres_changes', { event: '*', schema: 'public', table: 'wagers' }, (payload) => {
+        console.log('[Realtime] wagers event:', payload.eventType, (payload.new as Record<string, unknown>)?.id ?? (payload.old as Record<string, unknown>)?.id);
         if (payload.eventType === 'INSERT') {
           const w = mapWager(payload.new as Record<string, unknown>);
           setWagers((prev) => {
@@ -245,7 +272,10 @@ export default function App() {
           return [w, ...prev];
         });
       })
-      .subscribe();
+      .subscribe((status, err) => {
+        if (err) console.error('[Realtime] Subscribe error:', err);
+        else console.log('[Realtime] Channel status:', status);
+      });
 
     realtimeRef.current = channel;
   }
@@ -339,34 +369,34 @@ export default function App() {
   }
 
   async function approveWager(wagerId: string) {
-    // RPC atomically: marks wager_participants.approved=true for this user,
-    // then activates the wager once ALL participants have approved.
+    console.log('[approveWager] Calling RPC for wager:', wagerId);
     const { data: result, error } = await supabase.rpc('approve_wager', { p_wager_id: wagerId });
     if (error) {
-      console.error('approveWager RPC:', error);
+      console.error('[approveWager] RPC error:', error);
       setGlobalToast({ msg: `Approval failed: ${error.message}`, type: 'error' });
       return;
     }
+    console.log('[approveWager] RPC result:', result);
     if (result === 'not_participant') {
       setGlobalToast({ msg: 'You are not a participant of this wager.', type: 'error' });
       return;
     }
+    // Hide from Pending Approvals immediately regardless of activation state
+    setApprovedByMe((prev) => new Set([...prev, wagerId]));
     if (result === 'activated') {
-      // All participants approved — move wager to active grid
+      // All participants approved — move wager to active grid right away
       setWagers((prev) => prev.map((w) => w.id === wagerId ? { ...w, status: 'pending' } : w));
       setGlobalToast({ msg: '🎲 Wager approved and now active!', type: 'success' });
     } else {
-      // Approved but still waiting on others
       setGlobalToast({ msg: '✅ Approved! Waiting for other participants.', type: 'info' });
-      // Hide from Pending Approvals for this user by locally flipping status off pending_approval
-      // (realtime UPDATE from DB will sync the creator's view too)
     }
   }
 
   async function declineWager(wagerId: string) {
+    console.log('[declineWager] Calling RPC for wager:', wagerId);
     const { data: result, error } = await supabase.rpc('decline_wager', { p_wager_id: wagerId });
     if (error) {
-      console.error('declineWager RPC:', error);
+      console.error('[declineWager] RPC error:', error);
       setGlobalToast({ msg: `Decline failed: ${error.message}`, type: 'error' });
       return;
     }
@@ -466,13 +496,15 @@ export default function App() {
   const filterMap: Record<Filter, WagerStatus | null> = {
     All: null, Pending: 'pending', Won: 'won', Lost: 'lost', Settled: 'settled',
   };
-  // Wagers awaiting MY approval — shown in Pending Approvals section, not the main grid
+  // Wagers awaiting MY approval (not the creator, not already actioned this session)
   const pendingApprovalWagers = wagers.filter(
-    (w) => w.status === 'pending_approval' && w.creatorId !== profile.id
+    (w) => w.status === 'pending_approval'
+        && w.creatorId !== profile.id
+        && !approvedByMe.has(w.id)
   );
-  // Main grid: exclude wagers I need to approve; creator sees their own pending_approval in the grid
+  // Main grid: exclude wagers sitting in my Pending Approvals section
   const gridWagers = wagers.filter(
-    (w) => !(w.status === 'pending_approval' && w.creatorId !== profile.id)
+    (w) => !(w.status === 'pending_approval' && w.creatorId !== profile.id && !approvedByMe.has(w.id))
   );
   const visibleWagers =
     activeFilter === 'All' ? gridWagers : gridWagers.filter((w) => w.status === filterMap[activeFilter]);
