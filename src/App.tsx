@@ -5,7 +5,7 @@ import { supabase } from './lib/supabase';
 import Sidebar from './components/Sidebar';
 import WagerCard from './components/WagerCard';
 import Welcome from './components/Welcome';
-import type { Wager, WagerStatus, Friend, UserProfile, LeaderboardEntry, WagerApproval } from './types';
+import type { Wager, WagerStatus, Friend, UserProfile, LeaderboardEntry } from './types';
 import { AVATARS } from './avatars';
 import { requestPermission, isPermissionGranted, sendNotification } from './notifications';
 import './index.css';
@@ -47,14 +47,6 @@ function mapWager(row: Record<string, unknown>): Wager {
   };
 }
 
-function mapApproval(row: Record<string, unknown>): WagerApproval {
-  return {
-    id:        row.id         as string,
-    wagerId:   row.wager_id   as string,
-    profileId: row.profile_id as string,
-    status:    row.status     as 'pending' | 'approved' | 'declined',
-  };
-}
 
 function mapFriend(row: Record<string, unknown>): Friend {
   return {
@@ -118,7 +110,6 @@ export default function App() {
   const [session,            setSession]            = useState<Session | null>(null);
   const [profile,            setProfile]            = useState<UserProfile | null>(null);
   const [wagers,             setWagers]             = useState<Wager[]>([]);
-  const [approvals,          setApprovals]          = useState<WagerApproval[]>([]);
   const [friends,            setFriends]            = useState<Friend[]>([]);
   const [leaderboard,        setLeaderboard]        = useState<LeaderboardEntry[]>([]);
   const [loading,            setLoading]            = useState(true);
@@ -165,7 +156,6 @@ export default function App() {
         setProfile(null);
         setWagers([]);
         setFriends([]);
-        setApprovals([]);
         setLeaderboard([]);
         setLoading(false);
         realtimeRef.current?.unsubscribe();
@@ -180,17 +170,15 @@ export default function App() {
   async function loadUserData(userId: string) {
     setLoading(true);
     try {
-      const [{ data: pRow }, { data: wRows }, { data: fRows }, { data: lb }, { data: aRows }] = await Promise.all([
+      const [{ data: pRow }, { data: wRows }, { data: fRows }, { data: lb }] = await Promise.all([
         supabase.from('profiles').select('*').eq('id', userId).single(),
         supabase.from('wagers').select('*').order('created_at', { ascending: false }),
         supabase.from('friends').select('*').eq('owner_id', userId).order('created_at'),
         supabase.rpc('get_leaderboard'),
-        supabase.from('wager_approvals').select('*').eq('profile_id', userId).eq('status', 'pending'),
       ]);
       if (pRow) setProfile(mapProfile(pRow as Record<string, unknown>));
       setWagers((wRows ?? []).map((r) => mapWager(r as Record<string, unknown>)));
       setFriends((fRows ?? []).map((r) => mapFriend(r as Record<string, unknown>)));
-      setApprovals((aRows ?? []).map((r) => mapApproval(r as Record<string, unknown>)));
       setLeaderboard((lb ?? []).map((r: Record<string, unknown>) => ({
         id:        r.id        as string,
         firstName: r.first_name as string,
@@ -255,15 +243,6 @@ export default function App() {
           if (prev.some((x) => x.id === w.id)) return prev;
           void handleIncomingWager(w);
           return [w, ...prev];
-        });
-      })
-      // ── Approval records (INSERT = new pending request for us) ────────────
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'wager_approvals' }, async (payload) => {
-        const row = payload.new as { id: string; wager_id: string; profile_id: string; status: string };
-        if (row.profile_id !== userId || row.status !== 'pending') return;
-        setApprovals((prev) => {
-          if (prev.some((a) => a.id === row.id)) return prev;
-          return [...prev, mapApproval(row as unknown as Record<string, unknown>)];
         });
       })
       .subscribe();
@@ -364,45 +343,37 @@ export default function App() {
   }
 
   async function approveWager(wagerId: string) {
-    const approval = approvals.find((a) => a.wagerId === wagerId);
-    if (!approval) return;
-
-    // Update this approval record to 'approved'
+    // Update my approval record directly (no dependency on approvals state)
     const { error: updErr } = await supabase
       .from('wager_approvals')
       .update({ status: 'approved' })
-      .eq('id', approval.id);
+      .eq('wager_id', wagerId)
+      .eq('profile_id', profile!.id);
     if (updErr) { console.error('approveWager:', updErr); return; }
 
-    // Remove from local pending list
-    setApprovals((prev) => prev.filter((a) => a.id !== approval.id));
-
-    // Check if all approvals for this wager are now approved
+    // Check if all approvals for this wager are now resolved
     const { data: remaining } = await supabase
       .from('wager_approvals')
       .select('id')
       .eq('wager_id', wagerId)
       .eq('status', 'pending');
     if ((remaining ?? []).length === 0) {
-      // All approved — activate the wager
+      // Everyone approved — activate the wager
       await supabase.from('wagers').update({ status: 'pending' }).eq('id', wagerId);
       setWagers((prev) => prev.map((w) => w.id === wagerId ? { ...w, status: 'pending' } : w));
     }
   }
 
   async function declineWager(wagerId: string) {
-    const approval = approvals.find((a) => a.wagerId === wagerId);
-    if (!approval) return;
-
     const { error: updErr } = await supabase
       .from('wager_approvals')
       .update({ status: 'declined' })
-      .eq('id', approval.id);
+      .eq('wager_id', wagerId)
+      .eq('profile_id', profile!.id);
     if (updErr) { console.error('declineWager:', updErr); return; }
 
-    // Mark wager as declined
+    // Mark whole wager as declined immediately
     await supabase.from('wagers').update({ status: 'declined' }).eq('id', wagerId);
-    setApprovals((prev) => prev.filter((a) => a.id !== approval.id));
     setWagers((prev) => prev.map((w) => w.id === wagerId ? { ...w, status: 'declined' } : w));
   }
 
@@ -494,13 +465,13 @@ export default function App() {
   const filterMap: Record<Filter, WagerStatus | null> = {
     All: null, Pending: 'pending', Won: 'won', Lost: 'lost', Settled: 'settled',
   };
-  // Wagers awaiting my approval — show in Pending Requests, not the main grid
+  // Wagers awaiting MY approval — shown in Pending Approvals section, not the main grid
   const pendingApprovalWagers = wagers.filter(
-    (w) => w.status === 'pending_approval' && w.creatorId !== profile.id && approvals.some((a) => a.wagerId === w.id)
+    (w) => w.status === 'pending_approval' && w.creatorId !== profile.id
   );
-  // Main grid excludes pending_approval wagers I need to act on
+  // Main grid: exclude wagers I need to approve; creator sees their own pending_approval in the grid
   const gridWagers = wagers.filter(
-    (w) => !(w.status === 'pending_approval' && w.creatorId !== profile.id && approvals.some((a) => a.wagerId === w.id))
+    (w) => !(w.status === 'pending_approval' && w.creatorId !== profile.id)
   );
   const visibleWagers =
     activeFilter === 'All' ? gridWagers : gridWagers.filter((w) => w.status === filterMap[activeFilter]);
@@ -648,34 +619,42 @@ export default function App() {
           {pendingApprovalWagers.length > 0 && (
             <div className="flex flex-col gap-3">
               <div className="flex items-center gap-2">
-                <span className="text-amber-400 font-bold text-sm tracking-wider uppercase">Pending Requests</span>
+                <Bell className="w-4 h-4 text-amber-400" />
+                <span className="text-amber-400 font-bold text-sm tracking-wider uppercase">Pending Approvals</span>
                 <span className="bg-amber-400/20 text-amber-400 text-xs font-bold px-2 py-0.5 rounded-full border border-amber-400/30">
                   {pendingApprovalWagers.length}
                 </span>
               </div>
+              <p className="text-slate-500 text-xs -mt-1">A friend challenged you — accept or decline below.</p>
               <div className="flex flex-col gap-3">
                 {pendingApprovalWagers.map((w) => (
-                  <div key={w.id} className="bg-[#1E293B] border border-amber-400/30 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center gap-3">
-                    <div className="flex-1 min-w-0">
-                      <p className="text-slate-100 font-bold text-sm uppercase tracking-wide truncate">{w.title || w.condition}</p>
-                      <p className="text-slate-400 text-xs mt-0.5 truncate">{w.condition}</p>
-                      <p className="text-slate-500 text-xs mt-1">
-                        Stake: <span className="text-slate-300">{w.stakeType === 'money' && w.monetaryValue ? `₪${w.monetaryValue.toLocaleString()}${w.stake ? ` — ${w.stake}` : ''}` : w.stake}</span>
-                      </p>
-                    </div>
-                    <div className="flex gap-2 shrink-0">
-                      <button
-                        onClick={() => void approveWager(w.id)}
-                        className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400 text-xs font-semibold border border-emerald-500/30 transition-colors cursor-pointer"
-                      >
-                        <CheckCircle className="w-3.5 h-3.5" /> Approve
-                      </button>
-                      <button
-                        onClick={() => void declineWager(w.id)}
-                        className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-400 text-xs font-semibold border border-rose-500/30 transition-colors cursor-pointer"
-                      >
-                        <XCircle className="w-3.5 h-3.5" /> Decline
-                      </button>
+                  <div key={w.id} className="bg-[#1E293B] border border-amber-400/30 rounded-xl overflow-hidden">
+                    <div className="flex flex-col sm:flex-row sm:items-center gap-3 p-4">
+                      <div className="flex-1 min-w-0">
+                        <p className="text-slate-100 font-bold text-sm uppercase tracking-wide truncate">{w.title || w.condition}</p>
+                        <p className="text-slate-400 text-xs mt-1 leading-relaxed line-clamp-2">{w.condition}</p>
+                        <p className="text-slate-500 text-xs mt-2">
+                          Stake: <span className="text-amber-300 font-semibold">
+                            {w.stakeType === 'money' && w.monetaryValue
+                              ? `₪${w.monetaryValue.toLocaleString()}${w.stake ? ` — ${w.stake}` : ''}`
+                              : w.stake}
+                          </span>
+                        </p>
+                      </div>
+                      <div className="flex gap-2 shrink-0">
+                        <button
+                          onClick={() => void approveWager(w.id)}
+                          className="flex items-center gap-1.5 px-4 py-2.5 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400 text-xs font-bold border border-emerald-500/30 transition-colors cursor-pointer"
+                        >
+                          <CheckCircle className="w-4 h-4" /> Approve ✅
+                        </button>
+                        <button
+                          onClick={() => void declineWager(w.id)}
+                          className="flex items-center gap-1.5 px-4 py-2.5 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-400 text-xs font-bold border border-rose-500/30 transition-colors cursor-pointer"
+                        >
+                          <XCircle className="w-4 h-4" /> Decline ❌
+                        </button>
+                      </div>
                     </div>
                   </div>
                 ))}
