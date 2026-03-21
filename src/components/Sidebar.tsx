@@ -11,7 +11,7 @@ interface Props {
   wagers: Wager[];
   friends: Friend[];
   onAddWager: (wager: Wager) => void;
-  onAddFriend: (name: string) => 'added' | 'duplicate' | 'empty';
+  onAddFriend: (name: string, phone?: string) => 'added' | 'duplicate' | 'empty';
   notificationsEnabled: boolean;
   onToggleNotifications: () => Promise<void>;
 }
@@ -19,6 +19,7 @@ interface Props {
 export default function Sidebar({ wagers, friends, onAddWager, onAddFriend, notificationsEnabled, onToggleNotifications }: Props) {
   // ── Add-friend form ──────────────────────────────────────────────────────
   const [friendInput, setFriendInput] = useState('');
+  const [phoneInput,  setPhoneInput]  = useState('');
 
   // ── New-wager form ───────────────────────────────────────────────────────
   const [selectedFriends, setSelectedFriends] = useState<string[]>([]);
@@ -70,10 +71,11 @@ export default function Sidebar({ wagers, friends, onAddWager, onAddFriend, noti
   function handleAddFriend(e: React.FormEvent) {
     e.preventDefault();
     const trimmed = friendInput.trim();
-    const result  = onAddFriend(trimmed);
+    const result  = onAddFriend(trimmed, phoneInput.trim() || undefined);
     if (result === 'added') {
       setToast({ msg: `${trimmed} added to your crew!`, type: 'success' });
       setFriendInput('');
+      setPhoneInput('');
     } else if (result === 'duplicate') {
       setToast({ msg: `${trimmed} is already in your list.`, type: 'error' });
     } else {
@@ -291,22 +293,31 @@ export default function Sidebar({ wagers, friends, onAddWager, onAddFriend, noti
         </div>
 
         {/* Add Friend */}
-        <form onSubmit={handleAddFriend} className="flex gap-2 mb-4">
+        <form onSubmit={handleAddFriend} className="flex flex-col gap-2 mb-4">
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={friendInput}
+              onChange={(e) => setFriendInput(e.target.value)}
+              placeholder="Friend's name..."
+              className="flex-1 bg-[#0F172A] border border-[#334155] text-slate-100 text-sm rounded-lg px-3 py-2 placeholder-slate-600 focus:outline-none focus:border-sky-500 min-w-0"
+            />
+            <button
+              type="submit"
+              disabled={!friendInput.trim()}
+              className="shrink-0 p-2 bg-sky-500/20 hover:bg-sky-500/30 disabled:opacity-40 disabled:cursor-not-allowed text-sky-400 border border-sky-500/30 rounded-lg transition-colors cursor-pointer"
+              title="Add friend"
+            >
+              <UserPlus className="w-4 h-4" />
+            </button>
+          </div>
           <input
-            type="text"
-            value={friendInput}
-            onChange={(e) => setFriendInput(e.target.value)}
-            placeholder="Friend's name..."
-            className="flex-1 bg-[#0F172A] border border-[#334155] text-slate-100 text-sm rounded-lg px-3 py-2 placeholder-slate-600 focus:outline-none focus:border-sky-500 min-w-0"
+            type="tel"
+            value={phoneInput}
+            onChange={(e) => setPhoneInput(e.target.value)}
+            placeholder="Phone (optional, e.g. +972 50 000 0000)"
+            className="w-full bg-[#0F172A] border border-[#334155] text-slate-100 text-sm rounded-lg px-3 py-2 placeholder-slate-600 focus:outline-none focus:border-sky-500"
           />
-          <button
-            type="submit"
-            disabled={!friendInput.trim()}
-            className="shrink-0 p-2 bg-sky-500/20 hover:bg-sky-500/30 disabled:opacity-40 disabled:cursor-not-allowed text-sky-400 border border-sky-500/30 rounded-lg transition-colors cursor-pointer"
-            title="Add friend"
-          >
-            <UserPlus className="w-4 h-4" />
-          </button>
         </form>
 
         {friendStats.length === 0 ? (
@@ -323,6 +334,7 @@ export default function Sidebar({ wagers, friends, onAddWager, onAddFriend, noti
                   </div>
                   <div className="flex-1 min-w-0">
                     <p className="text-slate-100 text-sm font-semibold truncate">{fr.name}</p>
+                    {fr.phone && <p className="text-slate-600 text-[10px] truncate">{fr.phone}</p>}
                     <div className="h-1 bg-[#0F172A] rounded-full overflow-hidden mt-1">
                       <div className="h-full bg-emerald-500 rounded-full transition-all" style={{ width: `${winPct}%` }} />
                     </div>

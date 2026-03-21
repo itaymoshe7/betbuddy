@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { CheckCircle, XCircle, MessageCircle } from 'lucide-react';
 import confetti from 'canvas-confetti';
-import type { Wager, WagerStatus } from '../types';
+import type { Wager, WagerStatus, Friend } from '../types';
 import { sendNotification } from '../notifications';
 
 const statusConfig: Record<WagerStatus, { label: string; badgeClass: string; dotClass: string }> = {
@@ -38,6 +38,7 @@ const actionClass: Record<WagerStatus, string> = {
 
 interface Props {
   wager: Wager;
+  friends: Friend[];
   notificationsEnabled: boolean;
   onUpdate: (id: string, updates: Partial<Wager>) => void;
 }
@@ -65,16 +66,34 @@ function fireConfetti() {
   });
 }
 
-function buildWhatsAppUrl(friends: string[], condition: string, stake: string): string {
+function formatPhone(raw: string): string {
+  const digits = raw.replace(/\D/g, '');
+  // Strip leading 0 and prepend country code 972 (Israel default)
+  if (digits.startsWith('0')) return '972' + digits.slice(1);
+  // Already has country code (>= 11 digits) or starts with non-zero
+  return digits;
+}
+
+function buildWhatsAppUrl(wagerFriendNames: string[], allFriends: Friend[], condition: string, stake: string): string {
   const greeting =
-    friends.length === 1
-      ? `Hey ${friends[0]}`
-      : `Hey ${formatFriends(friends)}`;
+    wagerFriendNames.length === 1
+      ? `Hey ${wagerFriendNames[0]}`
+      : `Hey ${formatFriends(wagerFriendNames)}`;
   const msg = `${greeting}, our bet "${condition}" is settled! You owe me ${stake}. Pay up! Sent via BetBuddy.`;
+
+  // For single friend with a phone number, use direct wa.me link
+  if (wagerFriendNames.length === 1) {
+    const friend = allFriends.find((f) => f.name === wagerFriendNames[0]);
+    if (friend?.phone?.trim()) {
+      const phone = formatPhone(friend.phone.trim());
+      return `https://wa.me/${phone}?text=${encodeURIComponent(msg)}`;
+    }
+  }
+
   return `https://wa.me/?text=${encodeURIComponent(msg)}`;
 }
 
-export default function WagerCard({ wager, notificationsEnabled, onUpdate }: Props) {
+export default function WagerCard({ wager, friends, notificationsEnabled, onUpdate }: Props) {
   const [declaringResult, setDeclaringResult] = useState(false);
   const { label, badgeClass, dotClass } = statusConfig[wager.status];
   const isAwaitingPayment = wager.status === 'awaiting_payment';
@@ -192,7 +211,7 @@ export default function WagerCard({ wager, notificationsEnabled, onUpdate }: Pro
 
             {isAwaitingPayment && (
               <a
-                href={buildWhatsAppUrl(wager.friends, wager.condition, wager.stake)}
+                href={buildWhatsAppUrl(wager.friends, friends, wager.condition, wager.stake)}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="w-full py-2.5 rounded-lg text-sm font-semibold flex items-center justify-center gap-2 bg-[#25D366]/10 hover:bg-[#25D366]/20 text-[#25D366] border border-[#25D366]/30 transition-colors"

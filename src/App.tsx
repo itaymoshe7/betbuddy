@@ -111,11 +111,11 @@ export default function App() {
 
   function addWager(wager: Wager) { setWagers((prev) => [wager, ...prev]); }
 
-  function addFriend(name: string): 'added' | 'duplicate' | 'empty' {
+  function addFriend(name: string, phone?: string): 'added' | 'duplicate' | 'empty' {
     const trimmed = name.trim();
     if (!trimmed) return 'empty';
     if (friends.some((f) => f.name.toLowerCase() === trimmed.toLowerCase())) return 'duplicate';
-    setFriends((prev) => [...prev, { id: crypto.randomUUID(), name: trimmed, avatar: trimmed.slice(0, 2).toUpperCase() }]);
+    setFriends((prev) => [...prev, { id: crypto.randomUUID(), name: trimmed, avatar: trimmed.slice(0, 2).toUpperCase(), phone: phone?.trim() || undefined }]);
     return 'added';
   }
 
@@ -299,6 +299,7 @@ export default function App() {
                 <WagerCard
                   key={wager.id}
                   wager={wager}
+                  friends={friends}
                   notificationsEnabled={notificationsEnabled}
                   onUpdate={updateWager}
                 />

@@ -24,4 +24,5 @@ export interface Friend {
   id: string;
   name: string;
   avatar: string; // 2-letter initials
+  phone?: string;
 }

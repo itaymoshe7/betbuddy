@@ -1,7 +1,9 @@
 import { useState, useRef } from 'react';
-import { Zap, ArrowRight, User, Phone, Mail, Camera, X } from 'lucide-react';
+import { Zap, ArrowRight, User, Phone, Mail, Camera, X, LogIn } from 'lucide-react';
 import type { UserProfile } from '../types';
 import { AVATARS } from '../avatars';
+
+const PROFILE_KEY = 'betbuddy_profile_v1';
 
 interface Props {
   onComplete: (profile: UserProfile) => void;
@@ -30,6 +32,27 @@ function resizeImage(file: File): Promise<string> {
 }
 
 export default function Welcome({ onComplete, initialValues }: Props) {
+  const [mode, setMode] = useState<'signup' | 'login'>(initialValues ? 'signup' : 'signup');
+  const [loginEmail, setLoginEmail] = useState('');
+  const [loginError, setLoginError] = useState('');
+
+  function handleLogin(ev: React.FormEvent) {
+    ev.preventDefault();
+    const email = loginEmail.trim().toLowerCase();
+    if (!email) { setLoginError('Enter your email.'); return; }
+    try {
+      const raw = localStorage.getItem(PROFILE_KEY);
+      if (raw) {
+        const stored = JSON.parse(raw) as UserProfile;
+        if (stored.email?.toLowerCase() === email) {
+          onComplete(stored);
+          return;
+        }
+      }
+    } catch { /* ignore */ }
+    setLoginError('No account found with that email.');
+  }
+
   const [firstName,      setFirstName]      = useState(initialValues?.firstName      ?? '');
   const [lastName,       setLastName]        = useState(initialValues?.lastName       ?? '');
   const [phone,          setPhone]           = useState(initialValues?.phone          ?? '');
@@ -80,13 +103,57 @@ export default function Welcome({ onComplete, initialValues }: Props) {
             <span className="text-slate-100 font-extrabold text-2xl tracking-tight">BetBuddy</span>
           </div>
           <h1 className="text-slate-100 font-bold text-xl mb-1">
-            {initialValues ? 'Edit Profile' : 'Welcome aboard!'}
+            {initialValues ? 'Edit Profile' : mode === 'login' ? 'Welcome back!' : 'Welcome aboard!'}
           </h1>
           <p className="text-slate-400 text-sm">
-            {initialValues ? 'Update your details below.' : 'Set up your profile to start wagering with friends.'}
+            {initialValues ? 'Update your details below.'
+              : mode === 'login' ? 'Log in with your email.'
+              : 'Set up your profile to start wagering with friends.'}
           </p>
+          {!initialValues && (
+            <div className="flex items-center justify-center gap-1 mt-4">
+              <button
+                type="button"
+                onClick={() => { setMode('signup'); setLoginError(''); }}
+                className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${mode === 'signup' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'text-slate-500 hover:text-slate-300'}`}
+              >
+                Sign Up
+              </button>
+              <button
+                type="button"
+                onClick={() => { setMode('login'); setLoginError(''); }}
+                className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${mode === 'login' ? 'bg-sky-500/20 text-sky-400 border border-sky-500/30' : 'text-slate-500 hover:text-slate-300'}`}
+              >
+                Log In
+              </button>
+            </div>
+          )}
         </div>
 
+        {mode === 'login' && !initialValues ? (
+          <form onSubmit={handleLogin} className="px-6 md:px-8 py-6 flex flex-col gap-5">
+            <div className="flex flex-col gap-1">
+              <label className="text-xs text-slate-400 font-medium">Email <span className="text-rose-400">*</span></label>
+              <div className="relative">
+                <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 pointer-events-none" />
+                <input
+                  type="email"
+                  value={loginEmail}
+                  onChange={(e) => { setLoginEmail(e.target.value); setLoginError(''); }}
+                  placeholder="itay@example.com"
+                  className={`w-full bg-[#0F172A] border text-slate-100 text-sm rounded-lg pl-9 pr-3 py-2.5 focus:outline-none focus:border-sky-500 placeholder-slate-600 ${loginError ? 'border-rose-500' : 'border-[#334155]'}`}
+                />
+              </div>
+              {loginError && <p className="text-rose-400 text-xs">{loginError}</p>}
+            </div>
+            <button type="submit"
+              className="mt-1 w-full flex items-center justify-center gap-2 bg-sky-500 hover:bg-sky-400 text-white font-bold py-3 rounded-xl transition-colors cursor-pointer text-sm min-h-[48px]"
+            >
+              Log In <LogIn className="w-4 h-4" />
+            </button>
+            <p className="text-slate-600 text-xs text-center">Your data is stored locally and never shared.</p>
+          </form>
+        ) : (
         <form onSubmit={handleSubmit} className="px-6 md:px-8 py-6 flex flex-col gap-5">
           {/* Profile Picture + Avatar Row */}
           <div className="flex flex-col items-center gap-3">
@@ -211,6 +278,7 @@ export default function Welcome({ onComplete, initialValues }: Props) {
 
           <p className="text-slate-600 text-xs text-center">Your data is stored locally and never shared.</p>
         </form>
+        )}
       </div>
     </div>
   );
