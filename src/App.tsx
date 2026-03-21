@@ -127,8 +127,6 @@ export default function App() {
   const profileMenuRef   = useRef<HTMLDivElement>(null);
   const realtimeRef      = useRef<RealtimeChannel | null>(null);
   const notifEnabledRef  = useRef(notificationsEnabled);
-  // Prevents double loadUserData from getSession() + onAuthStateChange(INITIAL_SESSION)
-  const loadedRef        = useRef(false);
 
   // Keep notifEnabledRef in sync so realtime callbacks see current value
   useEffect(() => { notifEnabledRef.current = notificationsEnabled; }, [notificationsEnabled]);
@@ -141,31 +139,31 @@ export default function App() {
   }, [globalToast]);
 
   // ── Auth bootstrap ────────────────────────────────────────────────────────
+  // Only onAuthStateChange — no getSession() call.
+  // Supabase v2 fires INITIAL_SESSION immediately with the persisted session,
+  // which avoids the double-load race that happens when both getSession and
+  // INITIAL_SESSION are used together.  loadedRef was removed for the same
+  // reason: it persists across React StrictMode remounts, preventing the
+  // second mount from ever calling setLoading(false) → blank screen.
 
   useEffect(() => {
-    console.log('[Auth] Bootstrap: checking session…');
-
-    supabase.auth.getSession().then(({ data: { session: s } }) => {
-      console.log('[Auth] getSession result:', s ? `user=${s.user.id}` : 'none');
-      setSession(s);
-      if (s && !loadedRef.current) {
-        loadedRef.current = true;
-        loadUserData(s.user.id);
-      } else if (!s) {
-        setLoading(false);
-      }
-    });
+    console.log('[Auth] Bootstrap: subscribing to onAuthStateChange');
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, s) => {
-      console.log('[Auth] onAuthStateChange event:', event, s ? `user=${s.user.id}` : 'none');
+      console.log('[Auth] event:', event, s ? `user=${s.user.id}` : 'none');
       setSession(s);
-      if (s && !loadedRef.current) {
-        // Only fires if getSession() didn't already trigger loadUserData
-        loadedRef.current = true;
-        loadUserData(s.user.id);
-      } else if (!s) {
-        // Signed out
-        loadedRef.current = false;
+
+      if (event === 'INITIAL_SESSION') {
+        // Fires once on mount with the persisted session (or null if logged out)
+        if (s) {
+          loadUserData(s.user.id);
+        } else {
+          setLoading(false);
+        }
+      } else if (event === 'SIGNED_IN') {
+        // Fires when the user completes login/signup from the Welcome screen
+        loadUserData(s!.user.id);
+      } else if (event === 'SIGNED_OUT') {
         setProfile(null);
         setWagers([]);
         setFriends([]);
@@ -175,9 +173,13 @@ export default function App() {
         realtimeRef.current?.unsubscribe();
         realtimeRef.current = null;
       }
+      // TOKEN_REFRESHED, USER_UPDATED etc. don't reload data
     });
 
-    return () => { subscription.unsubscribe(); };
+    return () => {
+      console.log('[Auth] Cleanup: unsubscribing');
+      subscription.unsubscribe();
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

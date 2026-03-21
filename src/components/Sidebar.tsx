@@ -89,29 +89,33 @@ export default function Sidebar({
     return () => document.removeEventListener('mousedown', handler);
   }, []);
 
+  // Guard: ensure wagers/friends are always arrays before any array operation
+  const safeWagers  = Array.isArray(wagers)  ? wagers  : [];
+  const safeFriends = Array.isArray(friends) ? friends : [];
+
   // ── Stats ────────────────────────────────────────────────────────────────
-  const activeBets = wagers.filter((w) => w.status === 'pending' || w.status === 'awaiting_payment').length;
-  const decided    = wagers.filter((w) => w.result !== undefined);
-  const wonCount   = wagers.filter((w) => w.result === 'won').length;
+  const activeBets = safeWagers.filter((w) => w.status === 'pending' || w.status === 'awaiting_payment').length;
+  const decided    = safeWagers.filter((w) => w.result !== undefined);
+  const wonCount   = safeWagers.filter((w) => w.result === 'won').length;
   const winRate    = decided.length > 0 ? Math.round((wonCount / decided.length) * 100) : 0;
-  const beerCount  = wagers.filter((w) => /beer|pint/i.test(w.stake)).length;
+  const beerCount  = safeWagers.filter((w) => w.stake && /beer|pint/i.test(w.stake)).length;
 
   // ── Financial ────────────────────────────────────────────────────────────
-  const moneyWagers  = wagers.filter((w) => w.stakeType === 'money' && w.monetaryValue && w.result);
+  const moneyWagers  = safeWagers.filter((w) => w.stakeType === 'money' && w.monetaryValue && w.result);
   const totalWon     = moneyWagers.filter((w) => w.result === 'won') .reduce((s, w) => s + (w.monetaryValue ?? 0), 0);
   const totalLost    = moneyWagers.filter((w) => w.result === 'lost').reduce((s, w) => s + (w.monetaryValue ?? 0), 0);
   const netBalance   = totalWon - totalLost;
-  const chartData    = buildMonthlyChart(wagers);
+  const chartData    = buildMonthlyChart(safeWagers);
   const chartMax     = Math.max(...chartData.map((d) => Math.max(d.won, d.lost)), 1);
   const hasMoneyData = moneyWagers.length > 0;
 
   // ── Local leaderboard (friends) ──────────────────────────────────────────
-  const friendStats = friends
+  const friendStats = safeFriends
     .map((fr) => ({
       ...fr,
-      wins:   wagers.filter((w) => w.friends.includes(fr.name) && w.result === 'won').length,
-      losses: wagers.filter((w) => w.friends.includes(fr.name) && w.result === 'lost').length,
-      total:  wagers.filter((w) => w.friends.includes(fr.name)).length,
+      wins:   safeWagers.filter((w) => Array.isArray(w.friends) && w.friends.includes(fr.name) && w.result === 'won').length,
+      losses: safeWagers.filter((w) => Array.isArray(w.friends) && w.friends.includes(fr.name) && w.result === 'lost').length,
+      total:  safeWagers.filter((w) => Array.isArray(w.friends) && w.friends.includes(fr.name)).length,
     }))
     .sort((a, b) => b.wins - a.wins || a.losses - b.losses);
 
@@ -314,7 +318,7 @@ export default function Sidebar({
           <h2 className="text-xs font-bold tracking-widest text-slate-400 uppercase">New Wager</h2>
         </div>
 
-        {friends.length === 0 ? (
+        {safeFriends.length === 0 ? (
           <div className="flex items-center gap-2 bg-slate-800/50 border border-[#334155] rounded-lg px-3 py-2.5">
             <AlertCircle className="w-4 h-4 text-slate-500 shrink-0" />
             <p className="text-slate-500 text-xs">Add a friend below to place a wager.</p>
@@ -331,7 +335,7 @@ export default function Sidebar({
                 </button>
                 {pickerOpen && (
                   <div className="absolute top-full left-0 right-0 mt-1 z-20 bg-[#0F172A] border border-[#334155] rounded-lg shadow-xl overflow-hidden">
-                    {friends.map((f) => {
+                    {safeFriends.map((f) => {
                       const checked = selectedFriends.includes(f.name);
                       return (
                         <button key={f.id} type="button" onClick={() => toggleFriend(f.name)}

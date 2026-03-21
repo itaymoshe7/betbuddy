@@ -103,7 +103,13 @@ export default function WagerCard({ wager, friends, isOwner, notificationsEnable
   const [declaringResult, setDeclaringResult] = useState(false);
   const [calOpen,         setCalOpen]         = useState(false);
 
-  const { label, badgeClass, dotClass } = statusConfig[wager.status];
+  // Guard: bail out if wager data is incomplete (can happen during realtime partial updates)
+  if (!wager?.id || !wager.status) {
+    console.warn('[WagerCard] Received incomplete wager data:', wager);
+    return null;
+  }
+
+  const { label, badgeClass, dotClass } = statusConfig[wager.status] ?? statusConfig['pending'];
   const isAwaitingPayment = wager.status === 'awaiting_payment';
   const friendsText       = formatFriends(wager.friends);
   const showCalendar      = wager.status === 'pending' || wager.status === 'pending_approval';
