@@ -2,7 +2,8 @@ import {
   ArrowLeft, UserCog, Trophy, TrendingUp, Target,
   Calendar, Users, CheckCircle, XCircle, Clock,
 } from 'lucide-react';
-import type { Wager, Friend, UserProfile, LeaderboardEntry, WagerStatus } from '../types';
+import type { Wager, Friend, UserProfile, LeaderboardEntry } from '../types';
+import { getPersonalResult, isDecided, isActiveForUser } from '../lib/wagerUtils';
 import { AVATARS } from '../avatars';
 
 interface Props {
@@ -12,10 +13,6 @@ interface Props {
   leaderboard: LeaderboardEntry[];
   onBack:      () => void;
   onEditProfile: () => void;
-}
-
-function isActiveStatus(s: WagerStatus) {
-  return s === 'pending' || s === 'active' || s === 'overdue';
 }
 
 function fmtDate(iso: string) {
@@ -32,22 +29,22 @@ function fmtMonth(iso: string) {
 
 export default function ProfilePage({ profile, wagers, friends, leaderboard, onBack, onEditProfile }: Props) {
   const avatar = AVATARS[profile.avatarId] ?? AVATARS[0];
+  const uid    = profile.id;
 
-  // ── Stats ──────────────────────────────────────────────────────────────────
-  const myWagers   = wagers.filter((w) => w.creatorId === profile.id);
+  // ── Stats — all use getPersonalResult so participant wagers count correctly ──
   const totalWagers = wagers.length;
-  const wins        = myWagers.filter((w) => w.result === 'won').length;
-  const losses      = myWagers.filter((w) => w.result === 'lost').length;
+  const wins        = wagers.filter((w) => getPersonalResult(w, uid) === 'won').length;
+  const losses      = wagers.filter((w) => getPersonalResult(w, uid) === 'lost').length;
   const decided     = wins + losses;
   const winRate     = decided > 0 ? Math.round((wins / decided) * 100) : 0;
-  const activeBets  = wagers.filter((w) => isActiveStatus(w.status)).length;
+  const activeBets  = wagers.filter((w) => isActiveForUser(w, uid)).length;
 
-  const rankIndex  = leaderboard.findIndex((e) => e.id === profile.id);
+  const rankIndex  = leaderboard.findIndex((e) => e.id === uid);
   const ranking    = rankIndex >= 0 ? rankIndex + 1 : null;
 
-  // ── Recent settled activity (last 5 with a result) ─────────────────────────
+  // ── Recent settled activity (last 5 decided wagers, personal perspective) ───
   const recentActivity = [...wagers]
-    .filter((w) => w.result !== undefined)
+    .filter((w) => isDecided(w, uid))
     .sort((a, b) => new Date(b.deadline).getTime() - new Date(a.deadline).getTime())
     .slice(0, 5);
 
@@ -157,28 +154,32 @@ export default function ProfilePage({ profile, wagers, friends, leaderboard, onB
             <p className="text-slate-600 text-xs text-center py-3">No settled wagers yet.</p>
           ) : (
             <div className="flex flex-col divide-y divide-[#334155]">
-              {recentActivity.map((w) => (
-                <div key={w.id} className="flex items-center gap-3 py-3">
-                  {w.result === 'won' ? (
-                    <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0" />
-                  ) : (
-                    <XCircle className="w-4 h-4 text-rose-400 shrink-0" />
-                  )}
-                  <div className="flex-1 min-w-0">
-                    <p className="text-slate-100 text-sm font-semibold truncate">{w.title || w.condition}</p>
-                    <p className="text-slate-500 text-xs truncate">
-                      vs. {w.friends.join(', ') || '—'} · {fmtDate(w.deadline)}
-                    </p>
+              {recentActivity.map((w) => {
+                // Use personal perspective — not raw DB result which is creator-centric
+                const personalWon = getPersonalResult(w, uid) === 'won';
+                return (
+                  <div key={w.id} className="flex items-center gap-3 py-3">
+                    {personalWon ? (
+                      <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0" />
+                    ) : (
+                      <XCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <p className="text-slate-100 text-sm font-semibold truncate">{w.title || w.condition}</p>
+                      <p className="text-slate-500 text-xs truncate">
+                        vs. {w.friends.join(', ') || '—'} · {fmtDate(w.deadline)}
+                      </p>
+                    </div>
+                    <span className={`shrink-0 text-xs font-bold px-2 py-0.5 rounded-full ${
+                      personalWon
+                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
+                        : 'bg-rose-500/10 text-rose-400 border border-rose-500/30'
+                    }`}>
+                      {personalWon ? 'WON' : 'LOST'}
+                    </span>
                   </div>
-                  <span className={`shrink-0 text-xs font-bold px-2 py-0.5 rounded-full ${
-                    w.result === 'won'
-                      ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
-                      : 'bg-rose-500/10 text-rose-400 border border-rose-500/30'
-                  }`}>
-                    {w.result === 'won' ? 'WON' : 'LOST'}
-                  </span>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
@@ -198,9 +199,16 @@ export default function ProfilePage({ profile, wagers, friends, leaderboard, onB
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               {friends.map((fr) => {
-                const friendWagers = wagers.filter((w) => Array.isArray(w.friends) && w.friends.includes(fr.name));
-                const friendWins   = friendWagers.filter((w) => w.result === 'won').length;
-                const friendLosses = friendWagers.filter((w) => w.result === 'lost').length;
+                // Mutual wagers: wagers where this friend is a participant (their name in the list)
+                // OR where the friend is the creator (registered friends with a profileId).
+                const friendWagers = wagers.filter((w) => {
+                  const friendIsParticipant = Array.isArray(w.friends) && w.friends.includes(fr.name);
+                  const friendIsCreator     = !!fr.profileId && w.creatorId === fr.profileId;
+                  return friendIsParticipant || friendIsCreator;
+                });
+                // Count MY wins/losses vs this friend using the personal-perspective helper
+                const friendWins   = friendWagers.filter((w) => getPersonalResult(w, uid) === 'won').length;
+                const friendLosses = friendWagers.filter((w) => getPersonalResult(w, uid) === 'lost').length;
                 return (
                   <div key={fr.id} className="flex items-center gap-3 bg-[#0F172A] rounded-xl px-3 py-2.5">
                     <div className="w-9 h-9 rounded-full bg-slate-700 flex items-center justify-center text-sm font-bold text-slate-300 shrink-0">
