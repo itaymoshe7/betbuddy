@@ -17,6 +17,7 @@ export interface UserProfile {
   email: string;
   avatarId: number;
   profilePicture?: string;
+  memberSince?: string;  // ISO timestamp from profiles.created_at
 }
 
 export interface Wager {

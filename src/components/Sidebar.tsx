@@ -94,7 +94,7 @@ export default function Sidebar({
   const safeFriends = Array.isArray(friends) ? friends : [];
 
   // ── Stats ────────────────────────────────────────────────────────────────
-  const activeBets = safeWagers.filter((w) => w.status === 'pending' || w.status === 'active' || w.status === 'overdue' || w.status === 'awaiting_payment').length;
+  const activeBets = safeWagers.filter((w) => w.status === 'active' || w.status === 'pending' || w.status === 'overdue').length;
   const decided    = safeWagers.filter((w) => w.result !== undefined);
   const wonCount   = safeWagers.filter((w) => w.result === 'won').length;
   const winRate    = decided.length > 0 ? Math.round((wonCount / decided.length) * 100) : 0;
@@ -182,6 +182,7 @@ export default function Sidebar({
     }
     if (stakeType === 'other' && !stake.trim()) { setWagerError("Enter what's at stake."); return; }
     if (!deadline) { setWagerError('Set a deadline (date & time).'); return; }
+    if (new Date(deadline) <= new Date()) { setWagerError('Deadline must be in the future!'); return; }
     setWagerError('');
 
     const nameList = selectedFriends.length === 1
@@ -423,6 +424,11 @@ export default function Sidebar({
             <Field label="Deadline (date & time)">
               <input type="datetime-local" value={deadline}
                 onChange={(e) => { setDeadline(e.target.value); setWagerError(''); }}
+                min={(() => {
+                  const d = new Date();
+                  d.setMinutes(d.getMinutes() + 1);
+                  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+                })()}
                 className="w-full bg-[#0F172A] border border-[#334155] text-slate-100 text-sm rounded-lg px-3 py-2.5 focus:outline-none focus:border-sky-500 [color-scheme:dark]"
               />
             </Field>

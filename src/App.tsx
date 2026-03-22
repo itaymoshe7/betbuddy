@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef } from 'react';
 import type { RealtimeChannel, Session } from '@supabase/supabase-js';
-import { Zap, Swords, Menu, X, LogOut, UserCog, Bell, CheckCircle, XCircle, RefreshCw } from 'lucide-react';
+import { Zap, Swords, Menu, X, LogOut, UserCog, Bell, CheckCircle, XCircle, RefreshCw, LayoutDashboard } from 'lucide-react';
 import { supabase } from './lib/supabase';
 import Sidebar from './components/Sidebar';
 import WagerCard from './components/WagerCard';
 import Welcome from './components/Welcome';
 import ResetPassword from './components/ResetPassword';
+import ProfilePage from './components/ProfilePage';
 import type { Wager, WagerStatus, Friend, UserProfile, LeaderboardEntry } from './types';
 import { AVATARS } from './avatars';
 import { requestPermission, isPermissionGranted, sendNotification } from './notifications';
@@ -28,6 +29,7 @@ function mapProfile(row: Record<string, unknown>): UserProfile {
     email:          (row.email      as string) ?? '',
     avatarId:       (row.avatar_id  as number) ?? 0,
     profilePicture: (row.avatar_url as string | null) ?? undefined,
+    memberSince:    (row.created_at as string | null) ?? undefined,
   };
 }
 
@@ -148,7 +150,8 @@ export default function App() {
   );
   const [globalToast,     setGlobalToast]     = useState<{ msg: string; type: 'success' | 'error' | 'info' } | null>(null);
   const [refreshing,      setRefreshing]      = useState(false);
-  const [passwordRecovery, setPasswordRecovery] = useState(false);
+  const [passwordRecovery,  setPasswordRecovery]  = useState(false);
+  const [viewingProfile,    setViewingProfile]    = useState(false);
   // Tracks wagers this user already approved in the current session (so they vanish from Pending Approvals immediately)
   const [approvedByMe,    setApprovedByMe]    = useState<Set<string>>(new Set());
 
@@ -560,6 +563,21 @@ export default function App() {
     return <ResetPassword />;
   }
 
+  // ── Profile Page ──────────────────────────────────────────────────────────
+
+  if (viewingProfile && profile) {
+    return (
+      <ProfilePage
+        profile={profile}
+        wagers={wagers}
+        friends={friends}
+        leaderboard={leaderboard}
+        onBack={() => setViewingProfile(false)}
+        onEditProfile={() => { setViewingProfile(false); setEditingProfile(true); }}
+      />
+    );
+  }
+
   // ── Show Welcome (signup / login / edit) ──────────────────────────────────
 
   if (!session || !profile || editingProfile) {
@@ -674,6 +692,12 @@ export default function App() {
                 </div>
               </div>
               <div className="p-1.5 flex flex-col gap-0.5">
+                <button
+                  onClick={() => { setViewingProfile(true); setProfileMenuOpen(false); }}
+                  className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-300 hover:bg-slate-700/50 text-sm transition-colors cursor-pointer"
+                >
+                  <LayoutDashboard className="w-4 h-4 text-slate-400" /> My Profile
+                </button>
                 <button
                   onClick={() => { setEditingProfile(true); setProfileMenuOpen(false); }}
                   className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-300 hover:bg-slate-700/50 text-sm transition-colors cursor-pointer"
