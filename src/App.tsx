@@ -8,6 +8,7 @@ import Welcome from './components/Welcome';
 import ResetPassword from './components/ResetPassword';
 import ProfilePage from './components/ProfilePage';
 import type { Wager, WagerStatus, Friend, UserProfile, LeaderboardEntry } from './types';
+import { getPersonalResult, isActiveForUser } from './lib/wagerUtils';
 import { AVATARS } from './avatars';
 import { requestPermission, isPermissionGranted, sendNotification } from './notifications';
 import './index.css';
@@ -663,9 +664,6 @@ export default function App() {
 
   // ── Dashboard ─────────────────────────────────────────────────────────────
 
-  // Helper: 'pending' and 'active' are the same state (DB may store either string)
-  const isActiveStatus = (s: WagerStatus) => s === 'pending' || s === 'active' || s === 'overdue';
-
   // Wagers awaiting MY approval (not created by me, not yet actioned this session)
   const pendingApprovalWagers = wagers.filter(
     (w) => w.status === 'pending_approval'
@@ -676,21 +674,25 @@ export default function App() {
   const gridWagers = wagers.filter(
     (w) => !(w.status === 'pending_approval' && w.creatorId !== profile.id && !approvedByMe.has(w.id))
   );
+
+  // All tab filters use getPersonalResult so Won/Lost/Active reflect this user's outcome,
+  // not the raw DB value (which is from the creator's perspective).
+  const uid = profile.id;
   const visibleWagers = activeFilter === 'All'     ? gridWagers
-    : activeFilter === 'Active'  ? gridWagers.filter((w) => isActiveStatus(w.status))
+    : activeFilter === 'Active'  ? gridWagers.filter((w) => isActiveForUser(w, uid))
     : activeFilter === 'Pending' ? gridWagers.filter((w) => w.status === 'pending_approval')
-    : activeFilter === 'Won'     ? gridWagers.filter((w) => w.status === 'won')
-    : activeFilter === 'Lost'    ? gridWagers.filter((w) => w.status === 'lost')
+    : activeFilter === 'Won'     ? gridWagers.filter((w) => getPersonalResult(w, uid) === 'won')
+    : activeFilter === 'Lost'    ? gridWagers.filter((w) => getPersonalResult(w, uid) === 'lost')
     : activeFilter === 'Settled' ? gridWagers.filter((w) => w.status === 'settled' || w.status === 'awaiting_payment')
     : gridWagers;
 
-  // Badge counts for filter tabs
+  // Badge counts — same helpers for consistency
   const filterCounts: Record<Filter, number> = {
     All:     gridWagers.length,
     Pending: gridWagers.filter((w) => w.status === 'pending_approval').length,
-    Active:  gridWagers.filter((w) => isActiveStatus(w.status)).length,
-    Won:     gridWagers.filter((w) => w.status === 'won').length,
-    Lost:    gridWagers.filter((w) => w.status === 'lost').length,
+    Active:  gridWagers.filter((w) => isActiveForUser(w, uid)).length,
+    Won:     gridWagers.filter((w) => getPersonalResult(w, uid) === 'won').length,
+    Lost:    gridWagers.filter((w) => getPersonalResult(w, uid) === 'lost').length,
     Settled: gridWagers.filter((w) => w.status === 'settled' || w.status === 'awaiting_payment').length,
   };
 
@@ -946,6 +948,7 @@ export default function App() {
                   wager={wager}
                   friends={friends}
                   isOwner={wager.creatorId === profile.id}
+                  currentUserId={profile.id}
                   notificationsEnabled={notificationsEnabled}
                   onUpdate={(id, updates) => { void updateWager(id, updates); }}
                   onDelete={() => { void deleteWager(wager.id); }}

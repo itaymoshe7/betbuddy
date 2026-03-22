@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import type { Wager, WagerStatus, Friend } from '../types';
+import { getPersonalResult } from '../lib/wagerUtils';
 import { sendNotification } from '../notifications';
 import { buildGoogleCalendarUrl, downloadICS } from '../lib/calendar';
 
@@ -62,6 +63,7 @@ interface Props {
   wager: Wager;
   friends: Friend[];
   isOwner: boolean;
+  currentUserId: string;
   notificationsEnabled: boolean;
   onUpdate: (id: string, updates: Partial<Wager>) => void;
   onDelete: () => void;
@@ -109,7 +111,7 @@ function buildWhatsAppUrl(wagerFriendNames: string[], allFriends: Friend[], cond
   return `https://wa.me/?text=${encodeURIComponent(msg)}`;
 }
 
-export default function WagerCard({ wager, friends, isOwner, notificationsEnabled, onUpdate, onDelete }: Props) {
+export default function WagerCard({ wager, friends, isOwner, currentUserId, notificationsEnabled, onUpdate, onDelete }: Props) {
   const [declaringResult, setDeclaringResult] = useState(false);
   const [calOpen,         setCalOpen]         = useState(false);
 
@@ -119,17 +121,9 @@ export default function WagerCard({ wager, friends, isOwner, notificationsEnable
     return null;
   }
 
-  // Derive display status from participant's perspective:
-  // When creator declares "Won", the DB status is 'won' — but for a participant that means THEY LOST.
-  const effectiveStatus: WagerStatus = (() => {
-    if (isOwner) return wager.status;
-    switch (wager.status) {
-      case 'won':              return 'lost'; // creator won → participant lost
-      case 'lost':             return 'won';  // creator lost → participant won
-      case 'awaiting_payment': return 'lost'; // creator collecting → participant owes
-      default:                 return wager.status;
-    }
-  })();
+  // Single source of truth: derive display status from this user's personal perspective.
+  // Creator sees raw DB value; participants see the inverse for won/lost/awaiting_payment.
+  const effectiveStatus: WagerStatus = getPersonalResult(wager, currentUserId);
 
   const isActiveWager     = wager.status === 'pending' || wager.status === 'active' || wager.status === 'overdue';
   const { label, badgeClass, dotClass } = statusConfig[effectiveStatus] ?? statusConfig['pending'];

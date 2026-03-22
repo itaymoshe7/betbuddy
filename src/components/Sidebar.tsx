@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import type { Wager, Friend, LeaderboardEntry } from '../types';
+import { getPersonalResult, isDecided, isActiveForUser } from '../lib/wagerUtils';
 import { AVATARS } from '../avatars';
 
 type Toast = { msg: string; type: 'success' | 'error' | 'info' };
@@ -94,23 +95,18 @@ export default function Sidebar({
   const safeFriends = Array.isArray(friends) ? friends : [];
 
   // ── Stats ────────────────────────────────────────────────────────────────
-  // Compute result from the current user's perspective:
-  // If they're the creator, result is direct. If they're a participant, flip it.
-  function myResult(w: { result?: 'won' | 'lost'; creatorId: string }): 'won' | 'lost' | undefined {
-    if (!w.result) return undefined;
-    return w.creatorId === currentProfileId ? w.result : (w.result === 'won' ? 'lost' : 'won');
-  }
-
-  const activeBets = safeWagers.filter((w) => w.status === 'active' || w.status === 'pending' || w.status === 'overdue').length;
-  const decided    = safeWagers.filter((w) => myResult(w) !== undefined);
-  const wonCount   = safeWagers.filter((w) => myResult(w) === 'won').length;
+  // All outcome calculations go through getPersonalResult — the single source
+  // of truth for win/loss from each user's perspective.
+  const activeBets = safeWagers.filter((w) => isActiveForUser(w, currentProfileId)).length;
+  const decided    = safeWagers.filter((w) => isDecided(w, currentProfileId));
+  const wonCount   = safeWagers.filter((w) => getPersonalResult(w, currentProfileId) === 'won').length;
   const winRate    = decided.length > 0 ? Math.round((wonCount / decided.length) * 100) : 0;
   const beerCount  = safeWagers.filter((w) => w.stake && /beer|pint/i.test(w.stake)).length;
 
   // ── Financial ────────────────────────────────────────────────────────────
-  const moneyWagers  = safeWagers.filter((w) => w.stakeType === 'money' && w.monetaryValue && w.result);
-  const totalWon     = moneyWagers.filter((w) => myResult(w) === 'won') .reduce((s, w) => s + (w.monetaryValue ?? 0), 0);
-  const totalLost    = moneyWagers.filter((w) => myResult(w) === 'lost').reduce((s, w) => s + (w.monetaryValue ?? 0), 0);
+  const moneyWagers  = safeWagers.filter((w) => w.stakeType === 'money' && w.monetaryValue && isDecided(w, currentProfileId));
+  const totalWon     = moneyWagers.filter((w) => getPersonalResult(w, currentProfileId) === 'won') .reduce((s, w) => s + (w.monetaryValue ?? 0), 0);
+  const totalLost    = moneyWagers.filter((w) => getPersonalResult(w, currentProfileId) === 'lost').reduce((s, w) => s + (w.monetaryValue ?? 0), 0);
   const netBalance   = totalWon - totalLost;
   const chartData    = buildMonthlyChart(safeWagers);
   const chartMax     = Math.max(...chartData.map((d) => Math.max(d.won, d.lost)), 1);
