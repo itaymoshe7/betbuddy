@@ -5,6 +5,7 @@ import { supabase } from './lib/supabase';
 import Sidebar from './components/Sidebar';
 import WagerCard from './components/WagerCard';
 import Welcome from './components/Welcome';
+import ResetPassword from './components/ResetPassword';
 import type { Wager, WagerStatus, Friend, UserProfile, LeaderboardEntry } from './types';
 import { AVATARS } from './avatars';
 import { requestPermission, isPermissionGranted, sendNotification } from './notifications';
@@ -145,10 +146,11 @@ export default function App() {
   const [notificationsEnabled, setNotificationsEnabled] = useState(
     () => localStorage.getItem(NOTIF_KEY) === 'true' && isPermissionGranted()
   );
-  const [globalToast,    setGlobalToast]    = useState<{ msg: string; type: 'success' | 'error' | 'info' } | null>(null);
-  const [refreshing,     setRefreshing]     = useState(false);
+  const [globalToast,     setGlobalToast]     = useState<{ msg: string; type: 'success' | 'error' | 'info' } | null>(null);
+  const [refreshing,      setRefreshing]      = useState(false);
+  const [passwordRecovery, setPasswordRecovery] = useState(false);
   // Tracks wagers this user already approved in the current session (so they vanish from Pending Approvals immediately)
-  const [approvedByMe,   setApprovedByMe]   = useState<Set<string>>(new Set());
+  const [approvedByMe,    setApprovedByMe]    = useState<Set<string>>(new Set());
 
   const profileMenuRef   = useRef<HTMLDivElement>(null);
   const realtimeRef      = useRef<RealtimeChannel | null>(null);
@@ -189,12 +191,17 @@ export default function App() {
       } else if (event === 'SIGNED_IN') {
         // Fires when the user completes login/signup from the Welcome screen
         loadUserData(s!.user.id);
+      } else if (event === 'PASSWORD_RECOVERY') {
+        // User clicked the recovery link from email — show the set-new-password screen
+        setPasswordRecovery(true);
+        setLoading(false);
       } else if (event === 'SIGNED_OUT') {
         setProfile(null);
         setWagers([]);
         setFriends([]);
         setLeaderboard([]);
         setApprovedByMe(new Set());
+        setPasswordRecovery(false);
         setLoading(false);
         realtimeRef.current?.unsubscribe();
         realtimeRef.current = null;
@@ -213,21 +220,40 @@ export default function App() {
     console.log('[loadUserData] Starting for user:', userId);
     setLoading(true);
     try {
-      const [{ data: pRow, error: pErr }, { data: wRows, error: wErr }, { data: fRows, error: fErr }, { data: lb, error: lbErr }] = await Promise.all([
+      const [{ data: pRow, error: pErr }, { data: wRows, error: wErr }, { data: fRows, error: fErr }, { data: lb, error: lbErr }, { data: participantRows }] = await Promise.all([
         supabase.from('profiles').select('*').eq('id', userId).single(),
         supabase.from('wagers').select('*, creator:profiles!creator_id(first_name,last_name)').order('created_at', { ascending: false }),
         supabase.from('friends').select('*').eq('owner_id', userId).order('created_at'),
         supabase.rpc('get_leaderboard'),
+        // Fetch wager IDs where this user is a participant (not creator) — needed if RLS only returns creator wagers
+        supabase.from('wager_participants').select('wager_id').eq('profile_id', userId),
       ]);
       if (pErr)  console.error('[loadUserData] profiles error:', pErr);
       if (wErr)  console.error('[loadUserData] wagers error:', wErr);
       if (fErr)  console.error('[loadUserData] friends error:', fErr);
       if (lbErr) console.error('[loadUserData] leaderboard error:', lbErr);
 
-      console.log('[loadUserData] Got profile:', !!pRow, '| wagers:', wRows?.length ?? 0, '| friends:', fRows?.length ?? 0);
+      // Merge participant wagers that RLS may have excluded from the main query
+      let allWagerRows = wRows ?? [];
+      if (participantRows && participantRows.length > 0) {
+        const existingIds = new Set(allWagerRows.map((r) => r.id as string));
+        const missingIds  = participantRows
+          .map((r) => r.wager_id as string)
+          .filter((id) => !existingIds.has(id));
+        if (missingIds.length > 0) {
+          const { data: extraWagers } = await supabase
+            .from('wagers')
+            .select('*, creator:profiles!creator_id(first_name,last_name)')
+            .in('id', missingIds);
+          allWagerRows = [...allWagerRows, ...(extraWagers ?? [])];
+        }
+      }
+
+      console.log('[loadUserData] Got profile:', !!pRow, '| wagers:', allWagerRows.length, '| friends:', fRows?.length ?? 0);
+      console.log('Current Wagers in State:', allWagerRows.map((r) => ({ id: (r.id as string)?.slice(0, 8), status: r.status, creator_id: (r.creator_id as string)?.slice(0, 8) })));
 
       if (pRow) setProfile(mapProfile(pRow as Record<string, unknown>));
-      setWagers((wRows ?? []).map((r) => applyOverdue(mapWager(r as Record<string, unknown>))));
+      setWagers(allWagerRows.map((r) => applyOverdue(mapWager(r as Record<string, unknown>))));
       setFriends((fRows ?? []).map((r) => mapFriend(r as Record<string, unknown>)));
       setLeaderboard((lb ?? []).map((r: Record<string, unknown>) => ({
         id:        r.id        as string,
@@ -526,6 +552,12 @@ export default function App() {
         </div>
       </div>
     );
+  }
+
+  // ── Password recovery screen (triggered by magic link from email) ─────────
+
+  if (passwordRecovery) {
+    return <ResetPassword />;
   }
 
   // ── Show Welcome (signup / login / edit) ──────────────────────────────────
