@@ -1,6 +1,7 @@
 export type WagerStatus =
   | 'pending_approval'   // waiting for participant(s) to accept
-  | 'pending'            // active / in-progress
+  | 'pending'            // active / in-progress (legacy label)
+  | 'active'             // active / in-progress (new label — DB may store either)
   | 'awaiting_payment'   // creator declared won, waiting to collect
   | 'won'
   | 'lost'
@@ -20,6 +21,7 @@ export interface UserProfile {
 export interface Wager {
   id: string;
   creatorId: string;
+  creatorName: string;      // first+last name from profiles JOIN
   title: string;
   friends: string[];
   stake: string;

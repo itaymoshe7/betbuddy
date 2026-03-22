@@ -94,7 +94,7 @@ export default function Sidebar({
   const safeFriends = Array.isArray(friends) ? friends : [];
 
   // ── Stats ────────────────────────────────────────────────────────────────
-  const activeBets = safeWagers.filter((w) => w.status === 'pending' || w.status === 'awaiting_payment').length;
+  const activeBets = safeWagers.filter((w) => w.status === 'pending' || w.status === 'active' || w.status === 'awaiting_payment').length;
   const decided    = safeWagers.filter((w) => w.result !== undefined);
   const wonCount   = safeWagers.filter((w) => w.result === 'won').length;
   const winRate    = decided.length > 0 ? Math.round((wonCount / decided.length) * 100) : 0;
@@ -190,6 +190,7 @@ export default function Sidebar({
     onAddWager({
       id:             crypto.randomUUID(),
       creatorId:      '',
+      creatorName:    '',
       title:          condition.slice(0, 45).toUpperCase(),
       friends:        selectedFriends,
       stake:          stake.trim() || (stakeType === 'money' ? '' : stake.trim()),

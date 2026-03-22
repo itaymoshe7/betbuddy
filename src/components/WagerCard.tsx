@@ -8,19 +8,23 @@ import type { Wager, WagerStatus, Friend } from '../types';
 import { sendNotification } from '../notifications';
 import { buildGoogleCalendarUrl, downloadICS } from '../lib/calendar';
 
+const ACTIVE_BADGE = { label: 'ACTIVE', badgeClass: 'bg-sky-400/10 text-sky-400 border border-sky-400/30', dotClass: 'bg-sky-400 animate-pulse' };
+
 const statusConfig: Record<WagerStatus, { label: string; badgeClass: string; dotClass: string }> = {
   pending_approval: { label: 'AWAITING APPROVAL', badgeClass: 'bg-amber-400/10 text-amber-400 border border-amber-400/30',       dotClass: 'bg-amber-400'   },
-  pending:          { label: 'ACTIVE',             badgeClass: 'bg-sky-400/10 text-sky-400 border border-sky-400/30',             dotClass: 'bg-sky-400 animate-pulse' },
+  pending:          ACTIVE_BADGE,
+  active:           ACTIVE_BADGE,
   won:              { label: 'WON',                badgeClass: 'bg-emerald-400/10 text-emerald-400 border border-emerald-400/30', dotClass: 'bg-emerald-400' },
   awaiting_payment: { label: 'AWAITING PAYMENT',   badgeClass: 'bg-orange-400/10 text-orange-400 border border-orange-400/30',   dotClass: 'bg-orange-400'  },
   lost:             { label: 'LOST',               badgeClass: 'bg-rose-400/10 text-rose-400 border border-rose-400/30',         dotClass: 'bg-rose-400'    },
-  settled:          { label: 'SETTLED',            badgeClass: 'bg-slate-400/10 text-slate-400 border border-slate-400/30',     dotClass: 'bg-slate-400'   },
-  declined:         { label: 'DECLINED',           badgeClass: 'bg-slate-500/10 text-slate-500 border border-slate-500/20',     dotClass: 'bg-slate-500'   },
+  settled:          { label: 'SETTLED',            badgeClass: 'bg-slate-400/10 text-slate-400 border border-slate-400/30',      dotClass: 'bg-slate-400'   },
+  declined:         { label: 'DECLINED',           badgeClass: 'bg-slate-500/10 text-slate-500 border border-slate-500/20',      dotClass: 'bg-slate-500'   },
 };
 
 const statusLine: Record<WagerStatus, string> = {
   pending_approval: 'WAITING FOR APPROVAL',
   pending:          'ACTIVE — IN PROGRESS',
+  active:           'ACTIVE — IN PROGRESS',
   awaiting_payment: 'SETTLED — AWAITING PAYMENT',
   won:              'SETTLED — WON',
   lost:             'SETTLED — LOST',
@@ -31,6 +35,7 @@ const statusLine: Record<WagerStatus, string> = {
 const actionLabel: Record<WagerStatus, string> = {
   pending_approval: 'Waiting for Approval',
   pending:          'Declare Winner',
+  active:           'Declare Winner',
   won:              'Claim Payout',
   awaiting_payment: 'Mark as Received',
   lost:             'Pay Up',
@@ -40,7 +45,8 @@ const actionLabel: Record<WagerStatus, string> = {
 
 const actionClass: Record<WagerStatus, string> = {
   pending_approval: 'bg-amber-500/10 text-amber-400 border border-amber-500/20 cursor-not-allowed',
-  pending:          'bg-slate-600 hover:bg-slate-500 text-slate-100 font-semibold',
+  pending:          'bg-sky-600 hover:bg-sky-500 text-white font-semibold',
+  active:           'bg-sky-600 hover:bg-sky-500 text-white font-semibold',
   won:              'bg-emerald-500 hover:bg-emerald-400 text-white font-semibold',
   awaiting_payment: 'bg-orange-500 hover:bg-orange-400 text-white font-semibold',
   lost:             'bg-rose-500/20 hover:bg-rose-500/30 text-rose-400 font-semibold border border-rose-500/30',
@@ -109,18 +115,28 @@ export default function WagerCard({ wager, friends, isOwner, notificationsEnable
     return null;
   }
 
+  const isActiveWager     = wager.status === 'pending' || wager.status === 'active';
   const { label, badgeClass, dotClass } = statusConfig[wager.status] ?? statusConfig['pending'];
   const isAwaitingPayment = wager.status === 'awaiting_payment';
   const friendsText       = formatFriends(wager.friends);
-  const showCalendar      = wager.status === 'pending' || wager.status === 'pending_approval';
+  const showCalendar      = isActiveWager || wager.status === 'pending_approval';
   const isInactive        = wager.status === 'settled' || wager.status === 'declined' || wager.status === 'pending_approval';
   const stakeDisplay      = wager.stakeType === 'money' && wager.monetaryValue
     ? `₪${wager.monetaryValue.toLocaleString()}${wager.stake ? ` — ${wager.stake}` : ''}`
     : wager.stake;
 
+  // "You vs. X" for creator — "X vs. you" for participant (using creator name from JOIN)
+  const versusLabel = (() => {
+    if (wager.friends.length === 0) return '';
+    if (isOwner) return `You vs. ${friendsText}`;
+    const creator = wager.creatorName || 'Your friend';
+    return `${creator} vs. you`;
+  })();
+
   function handleAction() {
     switch (wager.status) {
-      case 'pending':          setDeclaringResult(true);                           break;
+      case 'pending':
+      case 'active':           setDeclaringResult(true);                           break;
       case 'won':              onUpdate(wager.id, { status: 'awaiting_payment' }); break;
       case 'awaiting_payment': onUpdate(wager.id, { status: 'settled' });          break;
       case 'lost':             onUpdate(wager.id, { status: 'settled' });          break;
@@ -160,18 +176,9 @@ export default function WagerCard({ wager, friends, isOwner, notificationsEnable
           <h3 className="text-slate-100 font-bold text-sm tracking-wider leading-snug uppercase truncate">
             {wager.title || wager.condition}
           </h3>
-          <div className="flex items-center gap-1.5 mt-1.5">
-            {wager.friends.slice(0, 4).map((name) => (
-              <div key={name} title={name}
-                className="w-5 h-5 rounded-full bg-slate-700 flex items-center justify-center text-[9px] font-bold text-slate-300">
-                {name.slice(0, 2).toUpperCase()}
-              </div>
-            ))}
-            {wager.friends.length > 4 && <span className="text-slate-500 text-xs">+{wager.friends.length - 4}</span>}
-            <span className="text-slate-500 text-xs truncate">
-              {wager.friends.length > 0 ? `vs. ${friendsText}` : ''}
-            </span>
-          </div>
+          {versusLabel ? (
+            <p className="text-slate-500 text-xs mt-1 truncate">{versusLabel}</p>
+          ) : null}
         </div>
         <span className={`shrink-0 flex items-center gap-1.5 text-[10px] font-bold px-2.5 py-1 rounded-full whitespace-nowrap ${badgeClass} ${isOwner && !isInactive ? 'mr-7' : ''}`}>
           <span className={`w-1.5 h-1.5 rounded-full ${dotClass}`} />

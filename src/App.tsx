@@ -31,18 +31,34 @@ function mapProfile(row: Record<string, unknown>): UserProfile {
 }
 
 function mapWager(row: Record<string, unknown>): Wager {
-  const raw = row.friends as string[] | null;
+  const raw     = row.friends as string[] | null;
   const friends: string[] = Array.isArray(raw) ? raw : [];
+
+  // Creator name from the profiles JOIN (select '*, creator:profiles!creator_id(first_name,last_name)')
+  const creatorRow = row.creator as { first_name?: string; last_name?: string } | null;
+  const creatorName = creatorRow
+    ? `${creatorRow.first_name ?? ''} ${creatorRow.last_name ?? ''}`.trim()
+    : '';
+
+  // Normalise 'active' → keep as-is; it is now a valid WagerStatus value
+  const rawStatus = (row.status as string) ?? 'pending';
+  const status: WagerStatus = (
+    rawStatus === 'active' || rawStatus === 'pending' || rawStatus === 'pending_approval' ||
+    rawStatus === 'awaiting_payment' || rawStatus === 'won' || rawStatus === 'lost' ||
+    rawStatus === 'settled' || rawStatus === 'declined'
+  ) ? rawStatus as WagerStatus : 'pending';
+
   return {
     id:            (row.id            as string) ?? '',
     creatorId:     (row.creator_id    as string) ?? '',
+    creatorName,
     title:         (row.title         as string) ?? '',
     condition:     (row.condition     as string) ?? '',
     stake:         (row.stake         as string) ?? '',
     stakeType:     (row.stake_type    as 'money' | 'other') ?? 'other',
     monetaryValue: (row.monetary_value as number | null) ?? undefined,
     deadline:      (row.deadline      as string) ?? '',
-    status:        (row.status        as WagerStatus) ?? 'pending',
+    status,
     result:        (row.result        as 'won' | 'lost' | null) ?? undefined,
     friends,
   };
@@ -191,7 +207,7 @@ export default function App() {
     try {
       const [{ data: pRow, error: pErr }, { data: wRows, error: wErr }, { data: fRows, error: fErr }, { data: lb, error: lbErr }] = await Promise.all([
         supabase.from('profiles').select('*').eq('id', userId).single(),
-        supabase.from('wagers').select('*').order('created_at', { ascending: false }),
+        supabase.from('wagers').select('*, creator:profiles!creator_id(first_name,last_name)').order('created_at', { ascending: false }),
         supabase.from('friends').select('*').eq('owner_id', userId).order('created_at'),
         supabase.rpc('get_leaderboard'),
       ]);
@@ -252,13 +268,16 @@ export default function App() {
           const w = mapWager(payload.new as Record<string, unknown>);
           setWagers((prev) => {
             if (prev.some((x) => x.id === w.id)) return prev;
-            // Notify when a wager from someone else appears (we're a participant)
             if (w.creatorId !== userId) void handleIncomingWager(w);
             return [w, ...prev];
           });
         } else if (payload.eventType === 'UPDATE') {
-          const w = mapWager(payload.new as Record<string, unknown>);
-          setWagers((prev) => prev.map((x) => (x.id === w.id ? w : x)));
+          const updated = mapWager(payload.new as Record<string, unknown>);
+          setWagers((prev) => prev.map((x) => {
+            if (x.id !== updated.id) return x;
+            // Realtime payload has no JOIN — keep existing creatorName
+            return { ...updated, creatorName: x.creatorName || updated.creatorName };
+          }));
         } else if (payload.eventType === 'DELETE') {
           setWagers((prev) => prev.filter((x) => x.id !== (payload.old as { id: string }).id));
         }
@@ -267,7 +286,7 @@ export default function App() {
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'wager_participants' }, async (payload) => {
         const row = payload.new as { wager_id: string; profile_id: string };
         if (row.profile_id !== userId) return;
-        const { data: wRow } = await supabase.from('wagers').select('*').eq('id', row.wager_id).single();
+        const { data: wRow } = await supabase.from('wagers').select('*, creator:profiles!creator_id(first_name,last_name)').eq('id', row.wager_id).single();
         if (!wRow) return;
         const w = mapWager(wRow as Record<string, unknown>);
         setWagers((prev) => {
@@ -344,7 +363,7 @@ export default function App() {
     try {
       const { data: wRows, error } = await supabase
         .from('wagers')
-        .select('*')
+        .select('*, creator:profiles!creator_id(first_name,last_name)')
         .order('created_at', { ascending: false });
       if (error) { console.error('[refresh] wagers error:', error); return; }
       setWagers((wRows ?? []).map((r) => mapWager(r as Record<string, unknown>)));
@@ -470,7 +489,7 @@ export default function App() {
     if (error) {
       console.error('deleteWager:', error);
       // Roll back on failure by re-fetching
-      const { data: wRows } = await supabase.from('wagers').select('*').order('created_at', { ascending: false });
+      const { data: wRows } = await supabase.from('wagers').select('*, creator:profiles!creator_id(first_name,last_name)').order('created_at', { ascending: false });
       setWagers((wRows ?? []).map((r) => mapWager(r as Record<string, unknown>)));
     }
   }
@@ -512,12 +531,8 @@ export default function App() {
 
   // ── Dashboard ─────────────────────────────────────────────────────────────
 
-  // 'pending_approval' = awaiting participant acceptance  → Pending tab
-  // 'pending'          = approved / in-progress           → Active tab
-  const filterMap: Record<Filter, WagerStatus | null> = {
-    All: null, Pending: 'pending_approval', Active: 'pending',
-    Won: 'won', Lost: 'lost', Settled: 'settled',
-  };
+  // Helper: 'pending' and 'active' are the same state (DB may store either string)
+  const isActiveStatus = (s: WagerStatus) => s === 'pending' || s === 'active';
 
   // Wagers awaiting MY approval (not created by me, not yet actioned this session)
   const pendingApprovalWagers = wagers.filter(
@@ -529,14 +544,19 @@ export default function App() {
   const gridWagers = wagers.filter(
     (w) => !(w.status === 'pending_approval' && w.creatorId !== profile.id && !approvedByMe.has(w.id))
   );
-  const visibleWagers =
-    activeFilter === 'All' ? gridWagers : gridWagers.filter((w) => w.status === filterMap[activeFilter]);
+  const visibleWagers = activeFilter === 'All'     ? gridWagers
+    : activeFilter === 'Active'  ? gridWagers.filter((w) => isActiveStatus(w.status))
+    : activeFilter === 'Pending' ? gridWagers.filter((w) => w.status === 'pending_approval')
+    : activeFilter === 'Won'     ? gridWagers.filter((w) => w.status === 'won')
+    : activeFilter === 'Lost'    ? gridWagers.filter((w) => w.status === 'lost')
+    : activeFilter === 'Settled' ? gridWagers.filter((w) => w.status === 'settled' || w.status === 'awaiting_payment')
+    : gridWagers;
 
   // Badge counts for filter tabs
   const filterCounts: Record<Filter, number> = {
     All:     gridWagers.length,
     Pending: gridWagers.filter((w) => w.status === 'pending_approval').length,
-    Active:  gridWagers.filter((w) => w.status === 'pending').length,
+    Active:  gridWagers.filter((w) => isActiveStatus(w.status)).length,
     Won:     gridWagers.filter((w) => w.status === 'won').length,
     Lost:    gridWagers.filter((w) => w.status === 'lost').length,
     Settled: gridWagers.filter((w) => w.status === 'settled' || w.status === 'awaiting_payment').length,
