@@ -119,12 +119,24 @@ export default function WagerCard({ wager, friends, isOwner, notificationsEnable
     return null;
   }
 
+  // Derive display status from participant's perspective:
+  // When creator declares "Won", the DB status is 'won' — but for a participant that means THEY LOST.
+  const effectiveStatus: WagerStatus = (() => {
+    if (isOwner) return wager.status;
+    switch (wager.status) {
+      case 'won':              return 'lost'; // creator won → participant lost
+      case 'lost':             return 'won';  // creator lost → participant won
+      case 'awaiting_payment': return 'lost'; // creator collecting → participant owes
+      default:                 return wager.status;
+    }
+  })();
+
   const isActiveWager     = wager.status === 'pending' || wager.status === 'active' || wager.status === 'overdue';
-  const { label, badgeClass, dotClass } = statusConfig[wager.status] ?? statusConfig['pending'];
+  const { label, badgeClass, dotClass } = statusConfig[effectiveStatus] ?? statusConfig['pending'];
   const isAwaitingPayment = wager.status === 'awaiting_payment';
   const friendsText       = formatFriends(wager.friends);
   const showCalendar      = isActiveWager || wager.status === 'pending_approval';
-  const isInactive        = wager.status === 'settled' || wager.status === 'declined' || wager.status === 'pending_approval';
+  const isInactive        = effectiveStatus === 'settled' || effectiveStatus === 'declined' || effectiveStatus === 'pending_approval';
   const canDelete         = isOwner && wager.status !== 'settled' && wager.status !== 'declined';
   const stakeDisplay      = wager.stakeType === 'money' && wager.monetaryValue
     ? `₪${wager.monetaryValue.toLocaleString()}${wager.stake ? ` — ${wager.stake}` : ''}`
@@ -210,7 +222,7 @@ export default function WagerCard({ wager, friends, isOwner, notificationsEnable
         <Row label="Deadline" value={formatDeadline(wager.deadline)} />
         <div className="flex justify-between text-sm">
           <span className="text-slate-400">Status</span>
-          <span className="text-slate-300 font-medium text-right text-xs">{statusLine[wager.status]}</span>
+          <span className="text-slate-300 font-medium text-right text-xs">{statusLine[effectiveStatus]}</span>
         </div>
         <p className="text-slate-500 text-xs mt-1 leading-relaxed">{wager.condition}</p>
       </div>
@@ -237,24 +249,32 @@ export default function WagerCard({ wager, friends, isOwner, notificationsEnable
           </>
         ) : (
           <>
-            {/* Main action */}
+            {/* Main action — uses effectiveStatus for display, wager.status for logic */}
             <button
               onClick={handleAction}
               disabled={isInactive || !isOwner}
-              className={`w-full py-3 rounded-lg text-sm transition-colors ${actionClass[wager.status]} ${(!isOwner && !isInactive) ? 'opacity-40 cursor-not-allowed' : ''}`}
+              className={`w-full py-3 rounded-lg text-sm transition-colors ${actionClass[effectiveStatus]} ${(!isOwner && !isInactive) ? 'opacity-40 cursor-not-allowed' : ''}`}
               title={!isOwner && !isInactive ? 'Only the bet creator can update this wager' : undefined}
             >
-              {actionLabel[wager.status]}
+              {actionLabel[effectiveStatus]}
             </button>
 
-            {/* WhatsApp remind */}
-            {isAwaitingPayment && (
+            {/* WhatsApp remind — only for the creator (winner) waiting to collect */}
+            {isAwaitingPayment && isOwner && (
               <a href={buildWhatsAppUrl(wager.friends, friends, wager.condition, wager.stake)}
                 target="_blank" rel="noopener noreferrer"
                 className="w-full py-2.5 rounded-lg text-sm font-semibold flex items-center justify-center gap-2 bg-[#25D366]/10 hover:bg-[#25D366]/20 text-[#25D366] border border-[#25D366]/30 transition-colors">
                 <MessageCircle className="w-4 h-4" />
                 {wager.friends.length > 1 ? 'Remind All via WhatsApp' : 'Remind via WhatsApp'}
               </a>
+            )}
+
+            {/* Participant "you owe" info */}
+            {isAwaitingPayment && !isOwner && (
+              <div className="flex items-center gap-2 bg-rose-500/10 border border-rose-500/20 rounded-lg px-3 py-2">
+                <span className="text-base">💸</span>
+                <p className="text-rose-300 text-xs font-semibold">You owe {stakeDisplay} — time to pay up!</p>
+              </div>
             )}
 
             {/* Add to Calendar — shown on active wagers */}

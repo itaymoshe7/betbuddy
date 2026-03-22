@@ -45,11 +45,15 @@ function mapWager(row: Record<string, unknown>): Wager {
   const raw     = row.friends as string[] | null;
   const friends: string[] = Array.isArray(raw) ? raw : [];
 
-  // Creator name from the profiles JOIN (select '*, creator:profiles!creator_id(first_name,last_name)')
-  const creatorRow = row.creator as { first_name?: string; last_name?: string } | null;
-  const creatorName = creatorRow
-    ? `${creatorRow.first_name ?? ''} ${creatorRow.last_name ?? ''}`.trim()
-    : '';
+  // Handle both JOIN format (row.creator = {first_name, last_name})
+  // and flat RPC format (row.creator_first_name, row.creator_last_name)
+  let creatorName = '';
+  if (row.creator && typeof row.creator === 'object') {
+    const c = row.creator as { first_name?: string; last_name?: string };
+    creatorName = `${c.first_name ?? ''} ${c.last_name ?? ''}`.trim();
+  } else if (row.creator_first_name) {
+    creatorName = `${row.creator_first_name ?? ''} ${row.creator_last_name ?? ''}`.trim();
+  }
 
   // Normalise 'active' → keep as-is; it is now a valid WagerStatus value
   const rawStatus = (row.status as string) ?? 'pending';
@@ -223,40 +227,25 @@ export default function App() {
     console.log('[loadUserData] Starting for user:', userId);
     setLoading(true);
     try {
-      const [{ data: pRow, error: pErr }, { data: wRows, error: wErr }, { data: fRows, error: fErr }, { data: lb, error: lbErr }, { data: participantRows }] = await Promise.all([
+      const [{ data: pRow, error: pErr }, { data: wRows, error: wErr }, { data: fRows, error: fErr }, { data: lb, error: lbErr }] = await Promise.all([
         supabase.from('profiles').select('*').eq('id', userId).single(),
-        supabase.from('wagers').select('*, creator:profiles!creator_id(first_name,last_name)').order('created_at', { ascending: false }),
+        // get_my_wagers is SECURITY DEFINER — bypasses RLS to include wagers where
+        // the user is a participant (not only creator), fixing the "0 active bets" issue.
+        supabase.rpc('get_my_wagers'),
         supabase.from('friends').select('*').eq('owner_id', userId).order('created_at'),
         supabase.rpc('get_leaderboard'),
-        // Fetch wager IDs where this user is a participant (not creator) — needed if RLS only returns creator wagers
-        supabase.from('wager_participants').select('wager_id').eq('profile_id', userId),
       ]);
       if (pErr)  console.error('[loadUserData] profiles error:', pErr);
       if (wErr)  console.error('[loadUserData] wagers error:', wErr);
       if (fErr)  console.error('[loadUserData] friends error:', fErr);
       if (lbErr) console.error('[loadUserData] leaderboard error:', lbErr);
 
-      // Merge participant wagers that RLS may have excluded from the main query
-      let allWagerRows = wRows ?? [];
-      if (participantRows && participantRows.length > 0) {
-        const existingIds = new Set(allWagerRows.map((r) => r.id as string));
-        const missingIds  = participantRows
-          .map((r) => r.wager_id as string)
-          .filter((id) => !existingIds.has(id));
-        if (missingIds.length > 0) {
-          const { data: extraWagers } = await supabase
-            .from('wagers')
-            .select('*, creator:profiles!creator_id(first_name,last_name)')
-            .in('id', missingIds);
-          allWagerRows = [...allWagerRows, ...(extraWagers ?? [])];
-        }
-      }
-
+      const allWagerRows = wRows ?? [];
       console.log('[loadUserData] Got profile:', !!pRow, '| wagers:', allWagerRows.length, '| friends:', fRows?.length ?? 0);
-      console.log('Current Wagers in State:', allWagerRows.map((r) => ({ id: (r.id as string)?.slice(0, 8), status: r.status, creator_id: (r.creator_id as string)?.slice(0, 8) })));
+      console.log('Current Wagers in State:', allWagerRows.map((r: Record<string, unknown>) => ({ id: (r.id as string)?.slice(0, 8), status: r.status, creator_id: (r.creator_id as string)?.slice(0, 8) })));
 
       if (pRow) setProfile(mapProfile(pRow as Record<string, unknown>));
-      setWagers(allWagerRows.map((r) => applyOverdue(mapWager(r as Record<string, unknown>))));
+      setWagers(allWagerRows.map((r: Record<string, unknown>) => applyOverdue(mapWager(r))));
       setFriends((fRows ?? []).map((r) => mapFriend(r as Record<string, unknown>)));
       setLeaderboard((lb ?? []).map((r: Record<string, unknown>) => ({
         id:        r.id        as string,
@@ -318,6 +307,15 @@ export default function App() {
         } else if (payload.eventType === 'DELETE') {
           setWagers((prev) => prev.filter((x) => x.id !== (payload.old as { id: string }).id));
         }
+      })
+      // ── Friend added reciprocally by another user ─────────────────────────
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'friends' }, (payload) => {
+        const row = payload.new as { id: string; owner_id: string; name: string; avatar: string; phone: string; profile_id: string | null };
+        if (row.owner_id !== userId) return; // only our own friends-list rows
+        setFriends((prev) => {
+          if (prev.some((f) => f.id === row.id)) return prev;
+          return [...prev, { id: row.id, name: row.name, avatar: row.avatar, phone: row.phone || undefined, profileId: row.profile_id || undefined }];
+        });
       })
       // ── Participant link created (another user added us to a wager) ───────
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'wager_participants' }, async (payload) => {
@@ -398,12 +396,9 @@ export default function App() {
     if (!profile || refreshing) return;
     setRefreshing(true);
     try {
-      const { data: wRows, error } = await supabase
-        .from('wagers')
-        .select('*, creator:profiles!creator_id(first_name,last_name)')
-        .order('created_at', { ascending: false });
+      const { data: wRows, error } = await supabase.rpc('get_my_wagers');
       if (error) { console.error('[refresh] wagers error:', error); return; }
-      setWagers((wRows ?? []).map((r) => applyOverdue(mapWager(r as Record<string, unknown>))));
+      setWagers((wRows ?? []).map((r: Record<string, unknown>) => applyOverdue(mapWager(r))));
     } finally {
       setRefreshing(false);
     }
@@ -487,15 +482,32 @@ export default function App() {
     const trimmed = name.trim();
     if (!trimmed) return 'empty';
     if (friends.some((f) => f.name.toLowerCase() === trimmed.toLowerCase())) return 'duplicate';
-    const id     = crypto.randomUUID();
+
     const avatar = trimmed.slice(0, 2).toUpperCase();
-    const { error } = await supabase.from('friends').insert({
-      id, owner_id: profile!.id, name: trimmed,
-      phone: phone?.trim() ?? '', avatar,
-      profile_id: profileId ?? null,
-    });
-    if (error) { console.error('addFriend:', error); return 'empty'; }
-    setFriends((prev) => [...prev, { id, name: trimmed, avatar, phone: phone?.trim() || undefined, profileId }]);
+
+    if (profileId) {
+      // Registered user — use RPC to create the friendship both ways (bypasses RLS)
+      const { error } = await supabase.rpc('add_reciprocal_friend', {
+        p_friend_profile_id: profileId,
+        p_friend_name:       trimmed,
+        p_friend_avatar:     avatar,
+        p_friend_phone:      phone?.trim() ?? '',
+      });
+      if (error) { console.error('addFriend (RPC):', error); return 'empty'; }
+      // Optimistically add to local state; the actual id will come via realtime INSERT
+      const id = crypto.randomUUID();
+      setFriends((prev) => [...prev, { id, name: trimmed, avatar, phone: phone?.trim() || undefined, profileId }]);
+    } else {
+      // Non-registered friend — plain direct insert
+      const id = crypto.randomUUID();
+      const { error } = await supabase.from('friends').insert({
+        id, owner_id: profile!.id, name: trimmed,
+        phone: phone?.trim() ?? '', avatar,
+        profile_id: null,
+      });
+      if (error) { console.error('addFriend:', error); return 'empty'; }
+      setFriends((prev) => [...prev, { id, name: trimmed, avatar, phone: phone?.trim() || undefined }]);
+    }
     return 'added';
   }
 
@@ -528,8 +540,8 @@ export default function App() {
     if (error) {
       console.error('deleteWager:', error);
       // Roll back on failure by re-fetching
-      const { data: wRows } = await supabase.from('wagers').select('*, creator:profiles!creator_id(first_name,last_name)').order('created_at', { ascending: false });
-      setWagers((wRows ?? []).map((r) => applyOverdue(mapWager(r as Record<string, unknown>))));
+      const { data: wRows } = await supabase.rpc('get_my_wagers');
+      setWagers((wRows ?? []).map((r: Record<string, unknown>) => applyOverdue(mapWager(r))));
     }
   }
 

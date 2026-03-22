@@ -94,16 +94,23 @@ export default function Sidebar({
   const safeFriends = Array.isArray(friends) ? friends : [];
 
   // ── Stats ────────────────────────────────────────────────────────────────
+  // Compute result from the current user's perspective:
+  // If they're the creator, result is direct. If they're a participant, flip it.
+  function myResult(w: { result?: 'won' | 'lost'; creatorId: string }): 'won' | 'lost' | undefined {
+    if (!w.result) return undefined;
+    return w.creatorId === currentProfileId ? w.result : (w.result === 'won' ? 'lost' : 'won');
+  }
+
   const activeBets = safeWagers.filter((w) => w.status === 'active' || w.status === 'pending' || w.status === 'overdue').length;
-  const decided    = safeWagers.filter((w) => w.result !== undefined);
-  const wonCount   = safeWagers.filter((w) => w.result === 'won').length;
+  const decided    = safeWagers.filter((w) => myResult(w) !== undefined);
+  const wonCount   = safeWagers.filter((w) => myResult(w) === 'won').length;
   const winRate    = decided.length > 0 ? Math.round((wonCount / decided.length) * 100) : 0;
   const beerCount  = safeWagers.filter((w) => w.stake && /beer|pint/i.test(w.stake)).length;
 
   // ── Financial ────────────────────────────────────────────────────────────
   const moneyWagers  = safeWagers.filter((w) => w.stakeType === 'money' && w.monetaryValue && w.result);
-  const totalWon     = moneyWagers.filter((w) => w.result === 'won') .reduce((s, w) => s + (w.monetaryValue ?? 0), 0);
-  const totalLost    = moneyWagers.filter((w) => w.result === 'lost').reduce((s, w) => s + (w.monetaryValue ?? 0), 0);
+  const totalWon     = moneyWagers.filter((w) => myResult(w) === 'won') .reduce((s, w) => s + (w.monetaryValue ?? 0), 0);
+  const totalLost    = moneyWagers.filter((w) => myResult(w) === 'lost').reduce((s, w) => s + (w.monetaryValue ?? 0), 0);
   const netBalance   = totalWon - totalLost;
   const chartData    = buildMonthlyChart(safeWagers);
   const chartMax     = Math.max(...chartData.map((d) => Math.max(d.won, d.lost)), 1);
