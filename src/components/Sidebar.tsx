@@ -241,7 +241,7 @@ export default function Sidebar({
       <div className="bg-[#1E293B] border border-[#334155] rounded-xl p-5">
         <h2 className="text-xs font-bold tracking-widest text-slate-400 uppercase mb-4">My Summary</h2>
         <div className="grid grid-cols-3 gap-3">
-          <StatTile icon={<TrendingUp className="text-sky-400 w-5 h-5" />}  value={activeBets}    label="Active Bets" />
+          <StatTile icon={<TrendingUp className="text-sky-400 w-5 h-5" />}  value={activeBets}    label="Active" />
           <StatTile icon={<Trophy className="text-emerald-400 w-5 h-5" />}  value={`${winRate}%`} label="Win Rate"    />
           <StatTile icon={<Beer className="text-orange-400 w-5 h-5" />}     value={beerCount}     label="🍻 Count"    />
         </div>

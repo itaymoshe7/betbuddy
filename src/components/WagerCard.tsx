@@ -9,18 +9,18 @@ import { sendNotification } from '../notifications';
 import { buildGoogleCalendarUrl, downloadICS } from '../lib/calendar';
 
 const statusConfig: Record<WagerStatus, { label: string; badgeClass: string; dotClass: string }> = {
-  pending_approval: { label: 'AWAITING APPROVAL', badgeClass: 'bg-amber-400/10 text-amber-400 border border-amber-400/30',   dotClass: 'bg-amber-400'   },
-  pending:          { label: 'PENDING',            badgeClass: 'bg-sky-400/10 text-sky-400 border border-sky-400/30',         dotClass: 'bg-sky-400'     },
+  pending_approval: { label: 'AWAITING APPROVAL', badgeClass: 'bg-amber-400/10 text-amber-400 border border-amber-400/30',       dotClass: 'bg-amber-400'   },
+  pending:          { label: 'ACTIVE',             badgeClass: 'bg-sky-400/10 text-sky-400 border border-sky-400/30',             dotClass: 'bg-sky-400 animate-pulse' },
   won:              { label: 'WON',                badgeClass: 'bg-emerald-400/10 text-emerald-400 border border-emerald-400/30', dotClass: 'bg-emerald-400' },
-  awaiting_payment: { label: 'AWAITING PAYMENT',  badgeClass: 'bg-orange-400/10 text-orange-400 border border-orange-400/30', dotClass: 'bg-orange-400'  },
-  lost:             { label: 'LOST',               badgeClass: 'bg-rose-400/10 text-rose-400 border border-rose-400/30',      dotClass: 'bg-rose-400'    },
-  settled:          { label: 'SETTLED',            badgeClass: 'bg-slate-400/10 text-slate-400 border border-slate-400/30',   dotClass: 'bg-slate-400'   },
-  declined:         { label: 'DECLINED',           badgeClass: 'bg-slate-500/10 text-slate-500 border border-slate-500/20',   dotClass: 'bg-slate-500'   },
+  awaiting_payment: { label: 'AWAITING PAYMENT',   badgeClass: 'bg-orange-400/10 text-orange-400 border border-orange-400/30',   dotClass: 'bg-orange-400'  },
+  lost:             { label: 'LOST',               badgeClass: 'bg-rose-400/10 text-rose-400 border border-rose-400/30',         dotClass: 'bg-rose-400'    },
+  settled:          { label: 'SETTLED',            badgeClass: 'bg-slate-400/10 text-slate-400 border border-slate-400/30',     dotClass: 'bg-slate-400'   },
+  declined:         { label: 'DECLINED',           badgeClass: 'bg-slate-500/10 text-slate-500 border border-slate-500/20',     dotClass: 'bg-slate-500'   },
 };
 
 const statusLine: Record<WagerStatus, string> = {
   pending_approval: 'WAITING FOR APPROVAL',
-  pending:          'IN PROGRESS',
+  pending:          'ACTIVE — IN PROGRESS',
   awaiting_payment: 'SETTLED — AWAITING PAYMENT',
   won:              'SETTLED — WON',
   lost:             'SETTLED — LOST',
@@ -30,7 +30,7 @@ const statusLine: Record<WagerStatus, string> = {
 
 const actionLabel: Record<WagerStatus, string> = {
   pending_approval: 'Waiting for Approval',
-  pending:          'Declare Result',
+  pending:          'Declare Winner',
   won:              'Claim Payout',
   awaiting_payment: 'Mark as Received',
   lost:             'Pay Up',
@@ -197,7 +197,7 @@ export default function WagerCard({ wager, friends, isOwner, notificationsEnable
       <div className="px-5 pb-5 flex flex-col gap-2">
         {declaringResult ? (
           <>
-            <p className="text-slate-400 text-xs text-center">Who won this bet?</p>
+            <p className="text-slate-400 text-xs text-center font-semibold">Declare Winner</p>
             <div className="flex gap-2">
               <button onClick={() => handleDeclare('won')}
                 className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400 text-sm font-semibold border border-emerald-500/30 transition-colors cursor-pointer">

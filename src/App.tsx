@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import type { RealtimeChannel, Session } from '@supabase/supabase-js';
-import { Zap, Swords, Menu, X, LogOut, UserCog, Bell, CheckCircle, XCircle } from 'lucide-react';
+import { Zap, Swords, Menu, X, LogOut, UserCog, Bell, CheckCircle, XCircle, RefreshCw } from 'lucide-react';
 import { supabase } from './lib/supabase';
 import Sidebar from './components/Sidebar';
 import WagerCard from './components/WagerCard';
@@ -12,7 +12,8 @@ import './index.css';
 
 const NOTIF_KEY  = 'betbuddy_notifications';
 const MIGR_KEY   = 'betbuddy_migrated_v1';
-const FILTERS    = ['All', 'Pending', 'Won', 'Lost', 'Settled'] as const;
+// 'Pending' tab → pending_approval wagers; 'Active' tab → in-progress (pending) wagers
+const FILTERS    = ['All', 'Pending', 'Active', 'Won', 'Lost', 'Settled'] as const;
 type Filter = (typeof FILTERS)[number];
 
 // ── DB row helpers ──────────────────────────────────────────────────────────
@@ -121,6 +122,7 @@ export default function App() {
     () => localStorage.getItem(NOTIF_KEY) === 'true' && isPermissionGranted()
   );
   const [globalToast,    setGlobalToast]    = useState<{ msg: string; type: 'success' | 'error' | 'info' } | null>(null);
+  const [refreshing,     setRefreshing]     = useState(false);
   // Tracks wagers this user already approved in the current session (so they vanish from Pending Approvals immediately)
   const [approvedByMe,   setApprovedByMe]   = useState<Set<string>>(new Set());
 
@@ -336,6 +338,21 @@ export default function App() {
     }
   }
 
+  async function refreshWagers() {
+    if (!profile || refreshing) return;
+    setRefreshing(true);
+    try {
+      const { data: wRows, error } = await supabase
+        .from('wagers')
+        .select('*')
+        .order('created_at', { ascending: false });
+      if (error) { console.error('[refresh] wagers error:', error); return; }
+      setWagers((wRows ?? []).map((r) => mapWager(r as Record<string, unknown>)));
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
   async function addWager(wager: Wager) {
     // Detect registered participants to decide on approval flow
     const participantIds = wager.friends
@@ -495,21 +512,35 @@ export default function App() {
 
   // ── Dashboard ─────────────────────────────────────────────────────────────
 
+  // 'pending_approval' = awaiting participant acceptance  → Pending tab
+  // 'pending'          = approved / in-progress           → Active tab
   const filterMap: Record<Filter, WagerStatus | null> = {
-    All: null, Pending: 'pending', Won: 'won', Lost: 'lost', Settled: 'settled',
+    All: null, Pending: 'pending_approval', Active: 'pending',
+    Won: 'won', Lost: 'lost', Settled: 'settled',
   };
-  // Wagers awaiting MY approval (not the creator, not already actioned this session)
+
+  // Wagers awaiting MY approval (not created by me, not yet actioned this session)
   const pendingApprovalWagers = wagers.filter(
     (w) => w.status === 'pending_approval'
         && w.creatorId !== profile.id
         && !approvedByMe.has(w.id)
   );
-  // Main grid: exclude wagers sitting in my Pending Approvals section
+  // Main grid: everything except wagers sitting in the Pending Approvals section
   const gridWagers = wagers.filter(
     (w) => !(w.status === 'pending_approval' && w.creatorId !== profile.id && !approvedByMe.has(w.id))
   );
   const visibleWagers =
     activeFilter === 'All' ? gridWagers : gridWagers.filter((w) => w.status === filterMap[activeFilter]);
+
+  // Badge counts for filter tabs
+  const filterCounts: Record<Filter, number> = {
+    All:     gridWagers.length,
+    Pending: gridWagers.filter((w) => w.status === 'pending_approval').length,
+    Active:  gridWagers.filter((w) => w.status === 'pending').length,
+    Won:     gridWagers.filter((w) => w.status === 'won').length,
+    Lost:    gridWagers.filter((w) => w.status === 'lost').length,
+    Settled: gridWagers.filter((w) => w.status === 'settled' || w.status === 'awaiting_payment').length,
+  };
 
   const avatar = AVATARS[profile.avatarId] ?? AVATARS[0];
 
@@ -699,30 +730,55 @@ export default function App() {
           )}
 
           <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-0 sm:justify-between">
-            <div>
-              <h1 className="text-slate-100 font-bold text-xl md:text-2xl tracking-tight">Active & Recent Wagers</h1>
-              <p className="text-slate-400 text-sm mt-0.5">
-                {visibleWagers.length} wager{visibleWagers.length !== 1 ? 's' : ''}
-              </p>
+            <div className="flex items-center gap-3">
+              <div>
+                <h1 className="text-slate-100 font-bold text-xl md:text-2xl tracking-tight">My Wagers</h1>
+                <p className="text-slate-400 text-sm mt-0.5">
+                  {visibleWagers.length} wager{visibleWagers.length !== 1 ? 's' : ''}
+                  {activeFilter !== 'All' && ` · ${activeFilter}`}
+                </p>
+              </div>
+              <button
+                onClick={() => void refreshWagers()}
+                disabled={refreshing}
+                title="Refresh wagers"
+                className="p-2 rounded-lg text-slate-500 hover:text-slate-300 hover:bg-[#1E293B] disabled:opacity-40 transition-colors cursor-pointer"
+              >
+                <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
+              </button>
             </div>
             <div className="flex items-center gap-1.5 overflow-x-auto pb-1 sm:pb-0">
-              {FILTERS.map((filter) => (
-                <button
-                  key={filter}
-                  onClick={() => setActiveFilter(filter)}
-                  className={`shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
-                    activeFilter === filter
-                      ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                      : 'text-slate-400 hover:text-slate-300 hover:bg-[#1E293B]'
-                  }`}
-                >
-                  {filter}
-                </button>
-              ))}
+              {FILTERS.map((filter) => {
+                const count = filterCounts[filter];
+                return (
+                  <button
+                    key={filter}
+                    onClick={() => setActiveFilter(filter)}
+                    className={`shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                      activeFilter === filter
+                        ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                        : 'text-slate-400 hover:text-slate-300 hover:bg-[#1E293B]'
+                    }`}
+                  >
+                    {filter}
+                    {count > 0 && (
+                      <span className={`text-[10px] font-bold px-1.5 py-px rounded-full ${
+                        activeFilter === filter ? 'bg-emerald-500/30 text-emerald-300' : 'bg-slate-700 text-slate-400'
+                      }`}>
+                        {count}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
             </div>
           </div>
 
-          {visibleWagers.length === 0 ? (
+          {refreshing ? (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 md:gap-5">
+              {[1, 2, 3, 4].map((i) => <WagerSkeleton key={i} />)}
+            </div>
+          ) : visibleWagers.length === 0 ? (
             <EmptyState filter={activeFilter} hasFriends={friends.length > 0} />
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 md:gap-5">
@@ -741,6 +797,35 @@ export default function App() {
           )}
         </section>
       </main>
+    </div>
+  );
+}
+
+function WagerSkeleton() {
+  return (
+    <div className="flex flex-col bg-[#1E293B] border border-[#334155] rounded-xl overflow-hidden animate-pulse">
+      <div className="flex items-start justify-between gap-3 p-5 pb-4">
+        <div className="flex-1 space-y-2">
+          <div className="h-3.5 bg-slate-700 rounded w-3/4" />
+          <div className="flex gap-1.5 mt-2">
+            <div className="w-5 h-5 rounded-full bg-slate-700" />
+            <div className="h-3 bg-slate-800 rounded w-28 mt-1" />
+          </div>
+        </div>
+        <div className="h-6 w-28 bg-slate-700 rounded-full shrink-0" />
+      </div>
+      <div className="mx-5 border-t border-[#334155]" />
+      <div className="p-5 pt-4 space-y-3">
+        {[0, 1, 2].map((i) => (
+          <div key={i} className="flex justify-between items-center">
+            <div className="h-3 bg-slate-800 rounded w-12" />
+            <div className="h-3 bg-slate-700 rounded w-28" />
+          </div>
+        ))}
+      </div>
+      <div className="px-5 pb-5">
+        <div className="h-10 bg-slate-700/50 rounded-lg" />
+      </div>
     </div>
   );
 }
