@@ -18,6 +18,70 @@ const MIGR_KEY   = 'betbuddy_migrated_v1';
 const FILTERS    = ['All', 'Pending', 'Active', 'Won', 'Lost', 'Settled'] as const;
 type Filter = (typeof FILTERS)[number];
 
+// ── Wager fetcher: RPC with manual fallback ─────────────────────────────────
+// Tries get_my_wagers() first (SECURITY DEFINER, bypasses RLS).
+// If the migration hasn't been run yet the RPC will error — falls back to
+// a two-query approach that fetches creator wagers + participant wagers separately.
+
+async function fetchAllWagers(userId: string): Promise<Record<string, unknown>[]> {
+  // ── Primary: SECURITY DEFINER RPC ───────────────────────────────────────
+  const { data: rpcData, error: rpcError } = await supabase.rpc('get_my_wagers');
+  if (!rpcError && Array.isArray(rpcData)) {
+    console.log('[fetchAllWagers] RPC ok, rows:', rpcData.length);
+    console.log('Fetched Wagers:', (rpcData as Record<string, unknown>[]).map((r) => ({
+      id: (r.id as string)?.slice(0, 8),
+      status: r.status,
+      creator: (r.creator_id as string)?.slice(0, 8),
+    })));
+    return rpcData as Record<string, unknown>[];
+  }
+  if (rpcError) {
+    console.warn('[fetchAllWagers] RPC unavailable, falling back to manual fetch:', rpcError.message);
+  }
+
+  // ── Fallback: two-query join ─────────────────────────────────────────────
+  const [{ data: creatorRows, error: cErr }, { data: participations, error: pErr }] = await Promise.all([
+    supabase
+      .from('wagers')
+      .select('*, creator:profiles!creator_id(first_name,last_name)')
+      .eq('creator_id', userId),
+    supabase
+      .from('wager_participants')
+      .select('wager_id')
+      .eq('profile_id', userId),
+  ]);
+  if (cErr) console.error('[fetchAllWagers] creator wagers error:', cErr);
+  if (pErr) console.error('[fetchAllWagers] wager_participants error:', pErr);
+
+  const participantWagerIds = (participations ?? []).map((p: { wager_id: string }) => p.wager_id);
+
+  let participantRows: Record<string, unknown>[] = [];
+  if (participantWagerIds.length > 0) {
+    const { data: pWagers, error: pwErr } = await supabase
+      .from('wagers')
+      .select('*, creator:profiles!creator_id(first_name,last_name)')
+      .in('id', participantWagerIds);
+    if (pwErr) console.error('[fetchAllWagers] participant wagers error:', pwErr);
+    participantRows = (pWagers ?? []) as Record<string, unknown>[];
+  }
+
+  // Deduplicate (a wager may be both created by and participated in by the user)
+  const seen = new Set<string>();
+  const merged = [...(creatorRows ?? []), ...participantRows].filter((r) => {
+    const id = (r as Record<string, unknown>).id as string;
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  }) as Record<string, unknown>[];
+
+  console.log('[fetchAllWagers] Fallback result — creator:', (creatorRows ?? []).length,
+    '| participant-only:', participantRows.length, '| merged:', merged.length);
+  console.log('Fetched Wagers:', merged.map((r) => ({
+    id: (r.id as string)?.slice(0, 8), status: r.status, creator: (r.creator_id as string)?.slice(0, 8),
+  })));
+  return merged;
+}
+
 // ── DB row helpers ──────────────────────────────────────────────────────────
 
 function mapProfile(row: Record<string, unknown>): UserProfile {
@@ -227,22 +291,19 @@ export default function App() {
     console.log('[loadUserData] Starting for user:', userId);
     setLoading(true);
     try {
-      const [{ data: pRow, error: pErr }, { data: wRows, error: wErr }, { data: fRows, error: fErr }, { data: lb, error: lbErr }] = await Promise.all([
+      const [{ data: pRow, error: pErr }, allWagerRows, { data: fRows, error: fErr }, { data: lb, error: lbErr }] = await Promise.all([
         supabase.from('profiles').select('*').eq('id', userId).single(),
-        // get_my_wagers is SECURITY DEFINER — bypasses RLS to include wagers where
-        // the user is a participant (not only creator), fixing the "0 active bets" issue.
-        supabase.rpc('get_my_wagers'),
+        // fetchAllWagers: tries get_my_wagers() RPC (SECURITY DEFINER, bypasses RLS)
+        // then falls back to a manual two-query join if the migration hasn't run yet.
+        fetchAllWagers(userId),
         supabase.from('friends').select('*').eq('owner_id', userId).order('created_at'),
         supabase.rpc('get_leaderboard'),
       ]);
       if (pErr)  console.error('[loadUserData] profiles error:', pErr);
-      if (wErr)  console.error('[loadUserData] wagers error:', wErr);
       if (fErr)  console.error('[loadUserData] friends error:', fErr);
       if (lbErr) console.error('[loadUserData] leaderboard error:', lbErr);
 
-      const allWagerRows = wRows ?? [];
       console.log('[loadUserData] Got profile:', !!pRow, '| wagers:', allWagerRows.length, '| friends:', fRows?.length ?? 0);
-      console.log('Current Wagers in State:', allWagerRows.map((r: Record<string, unknown>) => ({ id: (r.id as string)?.slice(0, 8), status: r.status, creator_id: (r.creator_id as string)?.slice(0, 8) })));
 
       if (pRow) setProfile(mapProfile(pRow as Record<string, unknown>));
       setWagers(allWagerRows.map((r: Record<string, unknown>) => applyOverdue(mapWager(r))));
@@ -396,9 +457,8 @@ export default function App() {
     if (!profile || refreshing) return;
     setRefreshing(true);
     try {
-      const { data: wRows, error } = await supabase.rpc('get_my_wagers');
-      if (error) { console.error('[refresh] wagers error:', error); return; }
-      setWagers((wRows ?? []).map((r: Record<string, unknown>) => applyOverdue(mapWager(r))));
+      const rows = await fetchAllWagers(profile.id);
+      setWagers(rows.map((r) => applyOverdue(mapWager(r))));
     } finally {
       setRefreshing(false);
     }
@@ -540,8 +600,8 @@ export default function App() {
     if (error) {
       console.error('deleteWager:', error);
       // Roll back on failure by re-fetching
-      const { data: wRows } = await supabase.rpc('get_my_wagers');
-      setWagers((wRows ?? []).map((r: Record<string, unknown>) => applyOverdue(mapWager(r))));
+      const rows = await fetchAllWagers(profile!.id);
+      setWagers(rows.map((r) => applyOverdue(mapWager(r))));
     }
   }
 
