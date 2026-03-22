@@ -126,8 +126,11 @@ export default function Sidebar({
       });
       return {
         ...fr,
-        wins:   mutual.filter((w) => getPersonalResult(w, currentProfileId) === 'won').length,
-        losses: mutual.filter((w) => getPersonalResult(w, currentProfileId) === 'lost').length,
+        // "wins" and "losses" are from the FRIEND's perspective:
+        // friend won   = I lost   → getPersonalResult returns 'lost' for me
+        // friend lost  = I won    → getPersonalResult returns 'won' for me
+        wins:   mutual.filter((w) => getPersonalResult(w, currentProfileId) === 'lost').length,
+        losses: mutual.filter((w) => getPersonalResult(w, currentProfileId) === 'won').length,
         total:  mutual.length,
       };
     })

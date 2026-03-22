@@ -206,9 +206,11 @@ export default function ProfilePage({ profile, wagers, friends, leaderboard, onB
                   const friendIsCreator     = !!fr.profileId && w.creatorId === fr.profileId;
                   return friendIsParticipant || friendIsCreator;
                 });
-                // Count MY wins/losses vs this friend using the personal-perspective helper
-                const friendWins   = friendWagers.filter((w) => getPersonalResult(w, uid) === 'won').length;
-                const friendLosses = friendWagers.filter((w) => getPersonalResult(w, uid) === 'lost').length;
+                // Count the FRIEND's wins/losses in mutual wagers:
+                // friend won  = I lost   → my personal result is 'lost'
+                // friend lost = I won    → my personal result is 'won'
+                const friendWins   = friendWagers.filter((w) => getPersonalResult(w, uid) === 'lost').length;
+                const friendLosses = friendWagers.filter((w) => getPersonalResult(w, uid) === 'won').length;
                 return (
                   <div key={fr.id} className="flex items-center gap-3 bg-[#0F172A] rounded-xl px-3 py-2.5">
                     <div className="w-9 h-9 rounded-full bg-slate-700 flex items-center justify-center text-sm font-bold text-slate-300 shrink-0">
