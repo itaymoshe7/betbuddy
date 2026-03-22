@@ -7,6 +7,7 @@ import WagerCard from './components/WagerCard';
 import Welcome from './components/Welcome';
 import ResetPassword from './components/ResetPassword';
 import ProfilePage from './components/ProfilePage';
+import NewsFeed from './components/NewsFeed';
 import type { Wager, WagerStatus, Friend, UserProfile, LeaderboardEntry } from './types';
 import { getPersonalResult, isActiveForUser } from './lib/wagerUtils';
 import { AVATARS } from './avatars';
@@ -16,7 +17,7 @@ import './index.css';
 const NOTIF_KEY  = 'betbuddy_notifications';
 const MIGR_KEY   = 'betbuddy_migrated_v1';
 // 'Pending' tab → pending_approval wagers; 'Active' tab → in-progress (pending) wagers
-const FILTERS    = ['All', 'Pending', 'Active', 'Won', 'Lost', 'Settled'] as const;
+const FILTERS    = ['All', 'Pending', 'Active', 'Won', 'Lost', 'Settled', 'News'] as const;
 type Filter = (typeof FILTERS)[number];
 
 // ── Wager fetcher: RPC with manual fallback ─────────────────────────────────
@@ -138,6 +139,7 @@ function mapWager(row: Record<string, unknown>): Wager {
     stakeType:     (row.stake_type    as 'money' | 'other') ?? 'other',
     monetaryValue: (row.monetary_value as number | null) ?? undefined,
     deadline:      (row.deadline      as string) ?? '',
+    createdAt:     (row.created_at    as string | null) ?? undefined,
     status,
     result:        (row.result        as 'won' | 'lost' | null) ?? undefined,
     friends,
@@ -694,6 +696,7 @@ export default function App() {
     Won:     gridWagers.filter((w) => getPersonalResult(w, uid) === 'won').length,
     Lost:    gridWagers.filter((w) => getPersonalResult(w, uid) === 'lost').length,
     Settled: gridWagers.filter((w) => w.status === 'settled' || w.status === 'awaiting_payment').length,
+    News:    wagers.length, // all events, including pending-approval wagers not in the main grid
   };
 
   const avatar = AVATARS[profile.avatarId] ?? AVATARS[0];
@@ -934,7 +937,9 @@ export default function App() {
             </div>
           </div>
 
-          {refreshing ? (
+          {activeFilter === 'News' ? (
+            <NewsFeed wagers={wagers} friends={friends} currentUserId={profile.id} />
+          ) : refreshing ? (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 md:gap-5">
               {[1, 2, 3, 4].map((i) => <WagerSkeleton key={i} />)}
             </div>

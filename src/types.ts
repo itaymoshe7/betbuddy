@@ -31,6 +31,7 @@ export interface Wager {
   monetaryValue?: number;   // ILS amount, only when stakeType === 'money'
   status: WagerStatus;
   deadline: string;
+  createdAt?: string;       // ISO timestamp — used for activity feed ordering
   condition: string;
   result?: 'won' | 'lost';
 }

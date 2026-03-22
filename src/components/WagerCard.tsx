@@ -97,6 +97,30 @@ function formatPhone(raw: string): string {
   return digits.startsWith('0') ? '972' + digits.slice(1) : digits;
 }
 
+/** Builds a WhatsApp invite link asking participants to approve the wager. */
+function buildInviteUrl(wager: Wager, allFriends: Friend[]): string {
+  const appLink  = window.location.origin;
+  const stake    = wager.stakeType === 'money' && wager.monetaryValue
+    ? `₪${wager.monetaryValue.toLocaleString()}${wager.stake ? ` — ${wager.stake}` : ''}`
+    : wager.stake;
+  const condition = wager.title || wager.condition;
+
+  // If there's a single friend with a phone, open their direct chat
+  if (wager.friends.length === 1) {
+    const friend = allFriends.find((f) => f.name === wager.friends[0]);
+    const msg    = `Hey ${wager.friends[0]}! I just challenged you on BetBuddy: "${condition}" for ${stake}. Go to the app to approve it! 🚀 ${appLink}`;
+    if (friend?.phone?.trim()) {
+      return `https://wa.me/${formatPhone(friend.phone.trim())}?text=${encodeURIComponent(msg)}`;
+    }
+    return `https://wa.me/?text=${encodeURIComponent(msg)}`;
+  }
+
+  // Multiple friends — group share
+  const names = formatFriends(wager.friends);
+  const msg   = `Hey ${names}! I just challenged you on BetBuddy: "${condition}" for ${stake}. Go to the app to approve it! 🚀 ${appLink}`;
+  return `https://wa.me/?text=${encodeURIComponent(msg)}`;
+}
+
 function buildWhatsAppUrl(wagerFriendNames: string[], allFriends: Friend[], condition: string, stake: string): string {
   const greeting = wagerFriendNames.length === 1
     ? `Hey ${wagerFriendNames[0]}`
@@ -252,6 +276,19 @@ export default function WagerCard({ wager, friends, isOwner, currentUserId, noti
             >
               {actionLabel[effectiveStatus]}
             </button>
+
+            {/* WhatsApp invite — creator sends to participants to prompt approval */}
+            {wager.status === 'pending_approval' && isOwner && wager.friends.length > 0 && (
+              <a
+                href={buildInviteUrl(wager, friends)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="w-full py-2.5 rounded-lg text-sm font-semibold flex items-center justify-center gap-2 bg-[#25D366]/10 hover:bg-[#25D366]/20 text-[#25D366] border border-[#25D366]/30 transition-colors"
+              >
+                <MessageCircle className="w-4 h-4" />
+                {wager.friends.length > 1 ? 'Invite All via WhatsApp' : 'Invite via WhatsApp'}
+              </a>
+            )}
 
             {/* WhatsApp remind — only for the creator (winner) waiting to collect */}
             {isAwaitingPayment && isOwner && (
