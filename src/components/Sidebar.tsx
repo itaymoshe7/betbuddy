@@ -113,13 +113,24 @@ export default function Sidebar({
   const hasMoneyData = moneyWagers.length > 0;
 
   // ── Local leaderboard (friends) ──────────────────────────────────────────
+  // A "mutual wager" with a friend is any wager where:
+  //   • the friend appears in the wager's participants list (friend's name in w.friends), OR
+  //   • the friend is the wager creator (only possible for registered friends with a profileId)
+  // Win/Loss is always counted from currentUser's personal perspective via getPersonalResult.
   const friendStats = safeFriends
-    .map((fr) => ({
-      ...fr,
-      wins:   safeWagers.filter((w) => Array.isArray(w.friends) && w.friends.includes(fr.name) && w.result === 'won').length,
-      losses: safeWagers.filter((w) => Array.isArray(w.friends) && w.friends.includes(fr.name) && w.result === 'lost').length,
-      total:  safeWagers.filter((w) => Array.isArray(w.friends) && w.friends.includes(fr.name)).length,
-    }))
+    .map((fr) => {
+      const mutual = safeWagers.filter((w) => {
+        const friendIsParticipant = Array.isArray(w.friends) && w.friends.includes(fr.name);
+        const friendIsCreator     = !!fr.profileId && w.creatorId === fr.profileId;
+        return friendIsParticipant || friendIsCreator;
+      });
+      return {
+        ...fr,
+        wins:   mutual.filter((w) => getPersonalResult(w, currentProfileId) === 'won').length,
+        losses: mutual.filter((w) => getPersonalResult(w, currentProfileId) === 'lost').length,
+        total:  mutual.length,
+      };
+    })
     .sort((a, b) => b.wins - a.wins || a.losses - b.losses);
 
   // ── Handlers ─────────────────────────────────────────────────────────────
