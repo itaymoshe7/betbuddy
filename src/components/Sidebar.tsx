@@ -94,7 +94,7 @@ export default function Sidebar({
   const safeFriends = Array.isArray(friends) ? friends : [];
 
   // ── Stats ────────────────────────────────────────────────────────────────
-  const activeBets = safeWagers.filter((w) => w.status === 'pending' || w.status === 'active' || w.status === 'awaiting_payment').length;
+  const activeBets = safeWagers.filter((w) => w.status === 'pending' || w.status === 'active' || w.status === 'overdue' || w.status === 'awaiting_payment').length;
   const decided    = safeWagers.filter((w) => w.result !== undefined);
   const wonCount   = safeWagers.filter((w) => w.result === 'won').length;
   const winRate    = decided.length > 0 ? Math.round((wonCount / decided.length) * 100) : 0;
@@ -156,9 +156,10 @@ export default function Sidebar({
     searchTimeout.current = setTimeout(async () => {
       setSearching(true);
       try {
-        const isEmail = q.includes('@');
+        const term = q.trim().replace(/[%_]/g, '\\$&'); // escape LIKE special chars
         const { data } = await supabase.from('profiles').select('id,first_name,last_name,email,phone')
-          .eq(isEmail ? 'email' : 'phone', q.trim()).neq('id', currentProfileId).limit(5);
+          .or(`first_name.ilike.%${term}%,last_name.ilike.%${term}%,email.ilike.%${term}%,phone.ilike.%${term}%`)
+          .neq('id', currentProfileId).limit(8);
         setSearchResults((data ?? []).map((r: Record<string, unknown>) => ({
           id: r.id as string, firstName: r.first_name as string,
           lastName: r.last_name as string, email: r.email as string, phone: r.phone as string,
@@ -483,7 +484,7 @@ export default function Sidebar({
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 pointer-events-none" />
               <input type="text" value={searchQuery} onChange={(e) => handleSearchChange(e.target.value)}
-                placeholder="Search by email or phone..."
+                placeholder="Search by name, email or phone..."
                 className="w-full bg-[#0F172A] border border-[#334155] text-slate-100 text-sm rounded-lg pl-9 pr-3 py-2 placeholder-slate-600 focus:outline-none focus:border-sky-500"
               />
             </div>

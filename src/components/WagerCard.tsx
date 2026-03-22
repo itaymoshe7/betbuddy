@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import {
   CheckCircle, XCircle, MessageCircle, Trash2,
-  CalendarPlus, ChevronDown,
+  CalendarPlus, ChevronDown, Clock,
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import type { Wager, WagerStatus, Friend } from '../types';
@@ -14,6 +14,7 @@ const statusConfig: Record<WagerStatus, { label: string; badgeClass: string; dot
   pending_approval: { label: 'AWAITING APPROVAL', badgeClass: 'bg-amber-400/10 text-amber-400 border border-amber-400/30',       dotClass: 'bg-amber-400'   },
   pending:          ACTIVE_BADGE,
   active:           ACTIVE_BADGE,
+  overdue:          { label: 'OVERDUE',            badgeClass: 'bg-rose-500/10 text-rose-400 border border-rose-500/30',          dotClass: 'bg-rose-400 animate-pulse' },
   won:              { label: 'WON',                badgeClass: 'bg-emerald-400/10 text-emerald-400 border border-emerald-400/30', dotClass: 'bg-emerald-400' },
   awaiting_payment: { label: 'AWAITING PAYMENT',   badgeClass: 'bg-orange-400/10 text-orange-400 border border-orange-400/30',   dotClass: 'bg-orange-400'  },
   lost:             { label: 'LOST',               badgeClass: 'bg-rose-400/10 text-rose-400 border border-rose-400/30',         dotClass: 'bg-rose-400'    },
@@ -25,6 +26,7 @@ const statusLine: Record<WagerStatus, string> = {
   pending_approval: 'WAITING FOR APPROVAL',
   pending:          'ACTIVE — IN PROGRESS',
   active:           'ACTIVE — IN PROGRESS',
+  overdue:          'OVERDUE — DECLARE A WINNER',
   awaiting_payment: 'SETTLED — AWAITING PAYMENT',
   won:              'SETTLED — WON',
   lost:             'SETTLED — LOST',
@@ -36,6 +38,7 @@ const actionLabel: Record<WagerStatus, string> = {
   pending_approval: 'Waiting for Approval',
   pending:          'Declare Winner',
   active:           'Declare Winner',
+  overdue:          'Declare Winner',
   won:              'Claim Payout',
   awaiting_payment: 'Mark as Received',
   lost:             'Pay Up',
@@ -47,6 +50,7 @@ const actionClass: Record<WagerStatus, string> = {
   pending_approval: 'bg-amber-500/10 text-amber-400 border border-amber-500/20 cursor-not-allowed',
   pending:          'bg-sky-600 hover:bg-sky-500 text-white font-semibold',
   active:           'bg-sky-600 hover:bg-sky-500 text-white font-semibold',
+  overdue:          'bg-rose-600 hover:bg-rose-500 text-white font-semibold',
   won:              'bg-emerald-500 hover:bg-emerald-400 text-white font-semibold',
   awaiting_payment: 'bg-orange-500 hover:bg-orange-400 text-white font-semibold',
   lost:             'bg-rose-500/20 hover:bg-rose-500/30 text-rose-400 font-semibold border border-rose-500/30',
@@ -115,12 +119,13 @@ export default function WagerCard({ wager, friends, isOwner, notificationsEnable
     return null;
   }
 
-  const isActiveWager     = wager.status === 'pending' || wager.status === 'active';
+  const isActiveWager     = wager.status === 'pending' || wager.status === 'active' || wager.status === 'overdue';
   const { label, badgeClass, dotClass } = statusConfig[wager.status] ?? statusConfig['pending'];
   const isAwaitingPayment = wager.status === 'awaiting_payment';
   const friendsText       = formatFriends(wager.friends);
   const showCalendar      = isActiveWager || wager.status === 'pending_approval';
   const isInactive        = wager.status === 'settled' || wager.status === 'declined' || wager.status === 'pending_approval';
+  const canDelete         = isOwner && wager.status !== 'settled' && wager.status !== 'declined';
   const stakeDisplay      = wager.stakeType === 'money' && wager.monetaryValue
     ? `₪${wager.monetaryValue.toLocaleString()}${wager.stake ? ` — ${wager.stake}` : ''}`
     : wager.stake;
@@ -136,7 +141,8 @@ export default function WagerCard({ wager, friends, isOwner, notificationsEnable
   function handleAction() {
     switch (wager.status) {
       case 'pending':
-      case 'active':           setDeclaringResult(true);                           break;
+      case 'active':
+      case 'overdue':          setDeclaringResult(true);                           break;
       case 'won':              onUpdate(wager.id, { status: 'awaiting_payment' }); break;
       case 'awaiting_payment': onUpdate(wager.id, { status: 'settled' });          break;
       case 'lost':             onUpdate(wager.id, { status: 'settled' });          break;
@@ -156,14 +162,15 @@ export default function WagerCard({ wager, friends, isOwner, notificationsEnable
 
   return (
     <div className={`flex flex-col bg-[#1E293B] border rounded-xl overflow-hidden transition-all ${
-      isAwaitingPayment    ? 'border-orange-400/40 awaiting-glow'
+      wager.status === 'overdue'            ? 'border-rose-500/50'
+      : isAwaitingPayment                   ? 'border-orange-400/40 awaiting-glow'
       : wager.status === 'pending_approval' ? 'border-amber-400/30'
       : wager.status === 'declined'         ? 'border-slate-700/50 opacity-60'
       : 'border-[#334155]'
     }`}>
       {/* Header */}
       <div className="relative flex items-start justify-between gap-3 p-5 pb-4">
-        {isOwner && !isInactive && (
+        {canDelete && (
           <button
             onClick={() => { if (window.confirm('Delete this wager? This cannot be undone.')) onDelete(); }}
             className="absolute top-3 right-3 p-1.5 rounded-lg text-slate-600 hover:text-rose-400 hover:bg-rose-500/10 transition-colors cursor-pointer z-10"
@@ -180,13 +187,21 @@ export default function WagerCard({ wager, friends, isOwner, notificationsEnable
             <p className="text-slate-500 text-xs mt-1 truncate">{versusLabel}</p>
           ) : null}
         </div>
-        <span className={`shrink-0 flex items-center gap-1.5 text-[10px] font-bold px-2.5 py-1 rounded-full whitespace-nowrap ${badgeClass} ${isOwner && !isInactive ? 'mr-7' : ''}`}>
+        <span className={`shrink-0 flex items-center gap-1.5 text-[10px] font-bold px-2.5 py-1 rounded-full whitespace-nowrap ${badgeClass} ${canDelete ? 'mr-7' : ''}`}>
           <span className={`w-1.5 h-1.5 rounded-full ${dotClass}`} />
           {label}
         </span>
       </div>
 
       <div className="mx-5 border-t border-[#334155]" />
+
+      {/* Overdue banner */}
+      {wager.status === 'overdue' && (
+        <div className="mx-5 mt-3 flex items-center gap-2 bg-rose-500/10 border border-rose-500/30 rounded-lg px-3 py-2">
+          <Clock className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+          <p className="text-rose-400 text-xs font-semibold">Deadline Passed! Please declare a winner.</p>
+        </div>
+      )}
 
       {/* Details */}
       <div className="p-5 pt-4 flex flex-col gap-2 flex-1">

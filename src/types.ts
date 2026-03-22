@@ -2,6 +2,7 @@ export type WagerStatus =
   | 'pending_approval'   // waiting for participant(s) to accept
   | 'pending'            // active / in-progress (legacy label)
   | 'active'             // active / in-progress (new label — DB may store either)
+  | 'overdue'            // deadline passed but no result declared (client-side derived)
   | 'awaiting_payment'   // creator declared won, waiting to collect
   | 'won'
   | 'lost'

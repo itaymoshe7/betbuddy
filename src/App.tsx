@@ -30,6 +30,14 @@ function mapProfile(row: Record<string, unknown>): UserProfile {
   };
 }
 
+// Marks an active wager as 'overdue' when its deadline has passed (client-side only)
+function applyOverdue(w: Wager): Wager {
+  if ((w.status === 'pending' || w.status === 'active') && w.deadline && new Date(w.deadline) < new Date()) {
+    return { ...w, status: 'overdue' };
+  }
+  return w;
+}
+
 function mapWager(row: Record<string, unknown>): Wager {
   const raw     = row.friends as string[] | null;
   const friends: string[] = Array.isArray(raw) ? raw : [];
@@ -44,8 +52,8 @@ function mapWager(row: Record<string, unknown>): Wager {
   const rawStatus = (row.status as string) ?? 'pending';
   const status: WagerStatus = (
     rawStatus === 'active' || rawStatus === 'pending' || rawStatus === 'pending_approval' ||
-    rawStatus === 'awaiting_payment' || rawStatus === 'won' || rawStatus === 'lost' ||
-    rawStatus === 'settled' || rawStatus === 'declined'
+    rawStatus === 'overdue' || rawStatus === 'awaiting_payment' || rawStatus === 'won' ||
+    rawStatus === 'lost' || rawStatus === 'settled' || rawStatus === 'declined'
   ) ? rawStatus as WagerStatus : 'pending';
 
   return {
@@ -219,7 +227,7 @@ export default function App() {
       console.log('[loadUserData] Got profile:', !!pRow, '| wagers:', wRows?.length ?? 0, '| friends:', fRows?.length ?? 0);
 
       if (pRow) setProfile(mapProfile(pRow as Record<string, unknown>));
-      setWagers((wRows ?? []).map((r) => mapWager(r as Record<string, unknown>)));
+      setWagers((wRows ?? []).map((r) => applyOverdue(mapWager(r as Record<string, unknown>))));
       setFriends((fRows ?? []).map((r) => mapFriend(r as Record<string, unknown>)));
       setLeaderboard((lb ?? []).map((r: Record<string, unknown>) => ({
         id:        r.id        as string,
@@ -265,14 +273,14 @@ export default function App() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'wagers' }, (payload) => {
         console.log('[Realtime] wagers event:', payload.eventType, (payload.new as Record<string, unknown>)?.id ?? (payload.old as Record<string, unknown>)?.id);
         if (payload.eventType === 'INSERT') {
-          const w = mapWager(payload.new as Record<string, unknown>);
+          const w = applyOverdue(mapWager(payload.new as Record<string, unknown>));
           setWagers((prev) => {
             if (prev.some((x) => x.id === w.id)) return prev;
             if (w.creatorId !== userId) void handleIncomingWager(w);
             return [w, ...prev];
           });
         } else if (payload.eventType === 'UPDATE') {
-          const updated = mapWager(payload.new as Record<string, unknown>);
+          const updated = applyOverdue(mapWager(payload.new as Record<string, unknown>));
           setWagers((prev) => prev.map((x) => {
             if (x.id !== updated.id) return x;
             // Realtime payload has no JOIN — keep existing creatorName
@@ -288,7 +296,7 @@ export default function App() {
         if (row.profile_id !== userId) return;
         const { data: wRow } = await supabase.from('wagers').select('*, creator:profiles!creator_id(first_name,last_name)').eq('id', row.wager_id).single();
         if (!wRow) return;
-        const w = mapWager(wRow as Record<string, unknown>);
+        const w = applyOverdue(mapWager(wRow as Record<string, unknown>));
         setWagers((prev) => {
           if (prev.some((x) => x.id === w.id)) return prev;
           void handleIncomingWager(w);
@@ -366,7 +374,7 @@ export default function App() {
         .select('*, creator:profiles!creator_id(first_name,last_name)')
         .order('created_at', { ascending: false });
       if (error) { console.error('[refresh] wagers error:', error); return; }
-      setWagers((wRows ?? []).map((r) => mapWager(r as Record<string, unknown>)));
+      setWagers((wRows ?? []).map((r) => applyOverdue(mapWager(r as Record<string, unknown>))));
     } finally {
       setRefreshing(false);
     }
@@ -403,7 +411,7 @@ export default function App() {
       );
     }
 
-    setWagers((prev) => [{ ...wager, creatorId: profile!.id, status }, ...prev]);
+    setWagers((prev) => [applyOverdue({ ...wager, creatorId: profile!.id, status }), ...prev]);
   }
 
   async function approveWager(wagerId: string) {
@@ -485,12 +493,14 @@ export default function App() {
   async function deleteWager(id: string) {
     // Optimistic remove
     setWagers((prev) => prev.filter((w) => w.id !== id));
+    // Delete participants first (handles pending_approval wagers with linked participants)
+    await supabase.from('wager_participants').delete().eq('wager_id', id);
     const { error } = await supabase.from('wagers').delete().eq('id', id);
     if (error) {
       console.error('deleteWager:', error);
       // Roll back on failure by re-fetching
       const { data: wRows } = await supabase.from('wagers').select('*, creator:profiles!creator_id(first_name,last_name)').order('created_at', { ascending: false });
-      setWagers((wRows ?? []).map((r) => mapWager(r as Record<string, unknown>)));
+      setWagers((wRows ?? []).map((r) => applyOverdue(mapWager(r as Record<string, unknown>))));
     }
   }
 
@@ -532,7 +542,7 @@ export default function App() {
   // ── Dashboard ─────────────────────────────────────────────────────────────
 
   // Helper: 'pending' and 'active' are the same state (DB may store either string)
-  const isActiveStatus = (s: WagerStatus) => s === 'pending' || s === 'active';
+  const isActiveStatus = (s: WagerStatus) => s === 'pending' || s === 'active' || s === 'overdue';
 
   // Wagers awaiting MY approval (not created by me, not yet actioned this session)
   const pendingApprovalWagers = wagers.filter(
